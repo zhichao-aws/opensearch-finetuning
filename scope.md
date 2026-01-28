@@ -27,6 +27,9 @@ We divide the project into Phase 1 (POC) and Phase 2 (Production/Productization)
 
 **Goal:** Establish an End-to-End workflow, proving that "synthetic data + fine-tuning" can produce viable models and successfully register them to OpenSearch.
 
+**User Experience:**
+*   After deploying the CFN stack and providing necessary parameters, the user simply waits for the process to complete. The final Model ID will be available in the OpenSearch cluster without any manual intervention.
+
 **Key Assumptions for POC:**
 
 *   Users directly provide a cleaned Corpus (txt/jsonl) on S3, or a simple AOS Index Dump.
