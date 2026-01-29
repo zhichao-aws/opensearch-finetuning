@@ -5,6 +5,7 @@ Orchestrates Bedrock Batch Inference for synthetic query generation
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Dict, List
 
 import boto3
@@ -74,8 +75,9 @@ def prepare_bedrock_input(s3_documents_path: str) -> Dict:
         }
         bedrock_inputs.append(bedrock_input)
 
-    # Save to S3
-    bedrock_input_key = "bedrock-input/batch_input.jsonl"
+    # Save to S3 with timestamp to avoid conflicts
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    bedrock_input_key = f"bedrock-input/batch_input_{timestamp}.jsonl"
     bedrock_input_content = "\n".join(json.dumps(inp) for inp in bedrock_inputs)
 
     s3_client.put_object(
@@ -186,12 +188,13 @@ def check_bedrock_job_status(job_id: str) -> Dict:
         raise
 
 
-def process_bedrock_output(output_s3_path: str) -> Dict:
+def process_bedrock_output(output_s3_path: str, s3_documents_path: str) -> Dict:
     """
     Process Bedrock Batch output and create training data.
 
     Args:
         output_s3_path: S3 path to Bedrock output
+        s3_documents_path: S3 path to original documents
 
     Returns:
         Dictionary with training data S3 path
@@ -216,7 +219,8 @@ def process_bedrock_output(output_s3_path: str) -> Dict:
     output_content = response["Body"].read().decode("utf-8")
 
     # Also load original documents for pairing
-    doc_response = s3_client.get_object(Bucket=DATA_BUCKET, Key="raw-corpus/documents.jsonl")
+    doc_bucket, doc_key = parse_s3_path(s3_documents_path)
+    doc_response = s3_client.get_object(Bucket=doc_bucket, Key=doc_key)
     doc_content = doc_response["Body"].read().decode("utf-8")
 
     documents_by_id = {}
@@ -263,8 +267,9 @@ def process_bedrock_output(output_s3_path: str) -> Dict:
 
     logger.info(f"Created {len(training_pairs)} training pairs")
 
-    # Save training data
-    training_data_key = "training-data/training_data.jsonl"
+    # Save training data with timestamp to avoid conflicts
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    training_data_key = f"training-data/training_data_{timestamp}.jsonl"
     training_data_content = "\n".join(json.dumps(pair) for pair in training_pairs)
 
     s3_client.put_object(
@@ -306,7 +311,8 @@ def handler(event, context):
 
         elif operation == "process_output":
             output_s3_path = event["output_s3_path"]
-            result = process_bedrock_output(output_s3_path)
+            s3_documents_path = event["s3_documents_path"]
+            result = process_bedrock_output(output_s3_path, s3_documents_path)
 
         else:
             raise ValueError(f"Unknown operation: {operation}")

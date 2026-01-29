@@ -199,6 +199,7 @@ def build_state_machine_definition(
             "operation": "process_output",
             "job_id": sfn.JsonPath.string_at("$.bedrock_job_result.Payload.job_id"),
             "output_s3_path": sfn.JsonPath.string_at("$.bedrock_status_result.Payload.output_s3_path"),
+            "s3_documents_path": sfn.JsonPath.string_at("$.documents_s3_path"),
         }),
         result_path="$.training_data_result",
         output_path="$",

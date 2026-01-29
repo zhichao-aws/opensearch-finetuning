@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import random
+from datetime import datetime, timezone
 from typing import Dict, List
 
 import boto3
@@ -184,8 +185,9 @@ def handler(event, context):
             max_documents=max_documents,
         )
 
-        # Save to S3
-        s3_key = "raw-corpus/documents.jsonl"
+        # Save to S3 with timestamp to avoid conflicts
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        s3_key = f"raw-corpus/documents_{timestamp}.jsonl"
         s3_path = save_documents_to_s3(documents, DATA_BUCKET, s3_key)
 
         # Return result
