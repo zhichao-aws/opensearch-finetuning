@@ -98,7 +98,33 @@ def build_state_machine_definition(
         backoff_rate=retry_backoff_rate,
     )
 
-    # 3. Prepare Bedrock Input
+    # 3. Normalize data paths from both sources
+    # This ensures both OpenSearch and S3 paths are available in a common location
+    normalize_opensearch_path = sfn.Pass(
+        scope,
+        "NormalizeOpenSearchPath",
+        parameters={
+            "documents_s3_path": sfn.JsonPath.string_at("$.extraction_result.Payload.s3_path"),
+            "input_type.$": "$.input_type",
+            "data_bucket.$": "$.data_bucket",
+            "extraction_result.$": "$.extraction_result",
+        },
+        output_path="$",
+    )
+
+    normalize_s3_path = sfn.Pass(
+        scope,
+        "NormalizeS3Path",
+        parameters={
+            "documents_s3_path": sfn.JsonPath.string_at("$.validation_result.Payload.s3_path"),
+            "input_type.$": "$.input_type",
+            "data_bucket.$": "$.data_bucket",
+            "validation_result.$": "$.validation_result",
+        },
+        output_path="$",
+    )
+
+    # 4. Prepare Bedrock Input
     prepare_bedrock_input = sfn_tasks.LambdaInvoke(
         scope,
         "PrepareBedrockInput",
@@ -106,9 +132,7 @@ def build_state_machine_definition(
         payload=sfn.TaskInput.from_object({
             "operation": "prepare_input",
             "data_source": sfn.JsonPath.string_at("$.input_type"),
-            "s3_documents_path": sfn.JsonPath.string_at(
-                "States.Format('s3://{}/raw-corpus/documents.jsonl', $.data_bucket)"
-            ),
+            "s3_documents_path": sfn.JsonPath.string_at("$.documents_s3_path"),
         }),
         result_path="$.bedrock_input_result",
         output_path="$",
@@ -357,9 +381,11 @@ def build_state_machine_definition(
         validate_s3_corpus,
     ).otherwise(failure_state)
 
-    # Connect both paths to Bedrock preparation
-    extract_from_opensearch.next(prepare_bedrock_input)
-    validate_s3_corpus.next(prepare_bedrock_input)
+    # Connect both paths through normalization to Bedrock preparation
+    extract_from_opensearch.next(normalize_opensearch_path)
+    validate_s3_corpus.next(normalize_s3_path)
+    normalize_opensearch_path.next(prepare_bedrock_input)
+    normalize_s3_path.next(prepare_bedrock_input)
 
     # Bedrock workflow with polling
     prepare_bedrock_input.next(create_bedrock_batch_job).next(wait_for_bedrock).next(check_bedrock_status).next(

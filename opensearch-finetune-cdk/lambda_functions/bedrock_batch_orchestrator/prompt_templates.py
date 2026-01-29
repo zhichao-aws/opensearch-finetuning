@@ -4,13 +4,13 @@ Prompt templates for query generation with Bedrock
 
 QUERY_GENERATION_PROMPT = """You are an expert at generating search queries.
 
-Given the following document, generate 2 diverse search queries that a user might use to find this document. Generate one factoid query (asking for specific information) and one conceptual query (asking about broader concepts).
+Given the following document, generate 5 diverse search queries that a user might use to find this document.
 
 Document:
 {document_text}
 
-Generate exactly 2 queries in the following JSON format:
-{{"queries": ["query1", "query2"]}}
+Generate exactly 5 queries in the following JSON format:
+{{"queries": ["query1", "query2", "query3", "query4", "query5"]}}
 
 Only return the JSON, no additional text."""
 

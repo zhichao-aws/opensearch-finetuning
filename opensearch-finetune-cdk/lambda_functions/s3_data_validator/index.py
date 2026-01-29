@@ -31,17 +31,20 @@ def parse_s3_path(s3_path: str) -> tuple:
 
 def validate_and_process_corpus(s3_corpus_path: str, max_documents: int) -> Dict:
     """
-    Validate S3 corpus format and process it.
+    Validate S3 corpus format.
 
-    Expected format: JSONL with {"id": "...", "text": "..."}
-    or txt file with one document per line.
+    Expected format: JSONL with {"id": "...", "text": "..."} on each line.
+    Both 'id' and 'text' fields are required.
 
     Args:
-        s3_corpus_path: S3 path to corpus file
-        max_documents: Maximum number of documents to process
+        s3_corpus_path: S3 path to corpus file (must be valid JSONL)
+        max_documents: Maximum number of documents to validate
 
     Returns:
         Dictionary with validation result
+
+    Raises:
+        ValueError: If format is invalid or required fields are missing
     """
     logger.info(f"Validating corpus at: {s3_corpus_path}")
 
@@ -49,69 +52,85 @@ def validate_and_process_corpus(s3_corpus_path: str, max_documents: int) -> Dict
         # Parse S3 path
         source_bucket, source_key = parse_s3_path(s3_corpus_path)
 
+        # Check file extension
+        if not source_key.endswith('.jsonl'):
+            raise ValueError(
+                f"Invalid file format. Expected .jsonl file, got: {source_key}. "
+                "Only JSONL format is supported."
+            )
+
         # Download file
         logger.info(f"Downloading from s3://{source_bucket}/{source_key}")
         response = s3_client.get_object(Bucket=source_bucket, Key=source_key)
         content = response["Body"].read().decode("utf-8")
 
-        # Parse documents
-        documents = []
+        # Parse and validate documents
         lines = content.strip().split("\n")
+        logger.info(f"Validating {min(len(lines), max_documents)} lines")
 
-        logger.info(f"Processing {len(lines)} lines")
-
-        for idx, line in enumerate(lines[:max_documents]):
+        document_count = 0
+        for line_num, line in enumerate(lines[:max_documents], start=1):
             line = line.strip()
             if not line:
                 continue
 
-            # Try to parse as JSON
+            # Parse as JSON
             try:
                 doc = json.loads(line)
-                if "text" in doc:
-                    # Already in correct format
-                    if "id" not in doc:
-                        doc["id"] = str(idx)
-                    documents.append(doc)
-                else:
-                    # Plain text, wrap in format
-                    documents.append({
-                        "id": str(idx),
-                        "text": line
-                    })
-            except json.JSONDecodeError:
-                # Plain text file
-                documents.append({
-                    "id": str(idx),
-                    "text": line
-                })
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Invalid JSON on line {line_num}: {str(e)}. "
+                    "Each line must be valid JSON."
+                )
 
-        logger.info(f"Validated {len(documents)} documents")
+            # Validate required fields
+            if "id" not in doc:
+                raise ValueError(
+                    f"Missing required field 'id' on line {line_num}. "
+                    "Each document must have 'id' and 'text' fields."
+                )
 
-        # Save to standard location
-        dest_key = "raw-corpus/documents.jsonl"
-        jsonl_content = "\n".join(json.dumps(doc) for doc in documents)
+            if "text" not in doc:
+                raise ValueError(
+                    f"Missing required field 'text' on line {line_num}. "
+                    "Each document must have 'id' and 'text' fields."
+                )
 
-        s3_client.put_object(
-            Bucket=DATA_BUCKET,
-            Key=dest_key,
-            Body=jsonl_content.encode("utf-8"),
-            ContentType="application/jsonlines"
-        )
+            # Validate field types
+            if not isinstance(doc["id"], str):
+                raise ValueError(
+                    f"Field 'id' must be a string on line {line_num}, "
+                    f"got {type(doc['id']).__name__}"
+                )
 
-        dest_path = f"s3://{DATA_BUCKET}/{dest_key}"
-        logger.info(f"Saved processed corpus to {dest_path}")
+            if not isinstance(doc["text"], str):
+                raise ValueError(
+                    f"Field 'text' must be a string on line {line_num}, "
+                    f"got {type(doc['text']).__name__}"
+                )
+
+            # Validate non-empty
+            if not doc["text"].strip():
+                raise ValueError(
+                    f"Field 'text' cannot be empty on line {line_num}"
+                )
+
+            document_count += 1
+
+        logger.info(f"Validated {document_count} documents successfully")
 
         return {
             "status": "success",
-            "s3_path": dest_path,
-            "document_count": len(documents),
-            "data_bucket": DATA_BUCKET,
+            "s3_path": s3_corpus_path,  # Return original path
+            "document_count": document_count,
         }
 
+    except ValueError:
+        # Re-raise validation errors
+        raise
     except Exception as e:
         logger.error(f"Error validating corpus: {str(e)}", exc_info=True)
-        raise
+        raise ValueError(f"Error reading or validating corpus: {str(e)}")
 
 
 def handler(event, context):
