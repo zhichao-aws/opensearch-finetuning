@@ -57,7 +57,7 @@
     "base_model_id": "BAAI/bge-base-en-v1.5",
     "training_instance_type": "ml.g5.2xlarge",
     "inference_instance_type": "ml.m5.xlarge",
-    "max_documents_poc": 5000,
+    "max_documents_poc": 20000,
     "bedrock_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
   }
 }

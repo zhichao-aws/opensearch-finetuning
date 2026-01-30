@@ -14,7 +14,7 @@ logger.setLevel(logging.INFO)
 
 s3_client = boto3.client("s3")
 DATA_BUCKET = os.environ["DATA_BUCKET"]
-MAX_DOCUMENTS = int(os.environ.get("MAX_DOCUMENTS", "5000"))
+MAX_DOCUMENTS = int(os.environ.get("MAX_DOCUMENTS", "20000"))
 
 
 def parse_s3_path(s3_path: str) -> tuple:

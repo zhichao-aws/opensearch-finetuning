@@ -98,7 +98,7 @@ Edit `cdk.json` or set environment variables:
     "base_model_id": "BAAI/bge-base-en-v1.5",
     "training_instance_type": "ml.g5.2xlarge",
     "inference_instance_type": "ml.m5.xlarge",
-    "max_documents_poc": 5000,
+    "max_documents_poc": 20000,
     "bedrock_model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0"
   }
 }
@@ -151,7 +151,7 @@ aws stepfunctions start-execution \
     "index_name": "my-corpus-index",
     "text_field": "content",
     "doc_id_field": "_id",
-    "max_documents": "5000",
+    "max_documents": "20000",
     "model_name": "my-finetuned-model-v1",
     "model_type": "dense",
     "base_model_id": "BAAI/bge-base-en-v1.5",
@@ -175,7 +175,7 @@ aws stepfunctions start-execution \
   --input '{
     "input_type": "s3",
     "s3_corpus_path": "s3://my-bucket/corpus/documents.jsonl",
-    "max_documents": "5000",
+    "max_documents": "20000",
     "model_name": "my-finetuned-model-v1",
     "model_type": "dense",
     "base_model_id": "BAAI/bge-base-en-v1.5",
@@ -216,7 +216,7 @@ curl -X POST "https://<opensearch-endpoint>/_plugins/_ml/models/<model-id>/_pred
 | `index_name` | If opensearch | Index to extract from |
 | `text_field` | No | Field containing text (default: "content") |
 | `s3_corpus_path` | If s3 | S3 path to corpus file |
-| `max_documents` | No | Max docs to process (default: 5000) |
+| `max_documents` | No | Max docs to process (default: 20000) |
 | `model_name` | Yes | Name for the fine-tuned model |
 | `model_type` | Yes | "dense" or "sparse" |
 | `base_model_id` | Yes | HuggingFace model ID |
@@ -234,9 +234,9 @@ curl -X POST "https://<opensearch-endpoint>/_plugins/_ml/models/<model-id>/_pred
 ### Sparse Models
 - Contact OpenSearch documentation for supported sparse models
 
-## Cost Estimation (POC with 5000 docs)
+## Cost Estimation (POC with 20000 docs)
 
-- **Bedrock**: ~$15 (5000 docs × 2 queries × 500 tokens × $0.003/1K)
+- **Bedrock**: ~$60 (20000 docs × 2 queries × 500 tokens × $0.003/1K)
 - **SageMaker Training**: ~$1-2 (1-2 hours on ml.g5.2xlarge)
 - **SageMaker Inference**: ~$100/month (ml.m5.xlarge running continuously)
 - **S3, Lambda, Step Functions**: <$5/month
@@ -275,7 +275,91 @@ cdk destroy
 
 ## Development
 
-### Run Tests
+### Testing Individual Steps
+
+During development, you can test each pipeline step independently without running the entire workflow.
+
+#### Option 1: Test Deployed Lambda Functions (`test_steps.py`)
+
+After deploying the CDK stack, use `test_steps.py` to invoke each Lambda directly:
+
+```bash
+# Test data extraction from OpenSearch (small batch for testing)
+python test_steps.py extract \
+  --endpoint https://your-domain.us-east-1.es.amazonaws.com \
+  --index my-corpus-index \
+  --max-documents 100
+
+# Test S3 corpus validation
+python test_steps.py validate \
+  --s3-path s3://your-bucket/corpus/documents.jsonl \
+  --max-documents 100
+
+# Test Bedrock query generation (full flow)
+python test_steps.py generate-queries \
+  --s3-docs-path s3://your-bucket/raw-corpus/documents.jsonl
+
+# Or step-by-step with checkpoints:
+python test_steps.py generate-queries \
+  --s3-docs-path s3://... \
+  --prepare-only  # Just prepare Bedrock input
+
+python test_steps.py generate-queries \
+  --s3-docs-path s3://... \
+  --create-job-only  # Create job but don't wait
+
+python test_steps.py generate-queries \
+  --check-job <job-id> \
+  --process-output \
+  --s3-docs-path s3://...  # Check status and process output
+
+# Test SageMaker training
+python test_steps.py train \
+  --training-data s3://your-bucket/training-data/training_data.jsonl \
+  --base-model-id BAAI/bge-base-en-v1.5 \
+  --instance-type ml.g5.2xlarge
+
+# Test endpoint deployment
+python test_steps.py deploy \
+  --model-artifacts s3://your-bucket/model-artifacts/model.tar.gz \
+  --instance-type ml.m5.xlarge
+
+# Test OpenSearch registration
+python test_steps.py register \
+  --sagemaker-endpoint my-endpoint \
+  --opensearch-endpoint https://your-domain.us-east-1.es.amazonaws.com \
+  --model-name my-finetuned-model \
+  --embedding-dimension 768
+
+# Test endpoint invocation
+python test_steps.py invoke \
+  --endpoint-name my-model-endpoint \
+  --texts "what is machine learning?" "how to train models"
+```
+
+#### Option 2: Local Testing (`test_local.py`)
+
+For faster iteration without AWS calls:
+
+```bash
+# Generate sample data for local testing
+python test_local.py generate-sample-data --output sample_training.jsonl
+
+# Validate local JSONL files
+python test_local.py validate-jsonl --file sample_corpus.jsonl --type corpus
+python test_local.py validate-jsonl --file sample_training.jsonl --type training
+
+# Test Lambda handlers locally (requires AWS credentials for S3/OpenSearch)
+python test_local.py test-extractor \
+  --endpoint https://... \
+  --index my-index \
+  --max-documents 10
+
+python test_local.py test-validator \
+  --s3-path s3://bucket/corpus.jsonl
+```
+
+### Run Unit Tests
 ```bash
 pip install -r requirements-dev.txt
 pytest tests/
@@ -307,7 +391,7 @@ mypy .
 
 ## Limitations (POC)
 
-- Sample N=5000 documents for speed
+- Sample N=20000 documents for speed
 - Only positive pairs (no hard negatives)
 - Real-time inference only (no serverless)
 - Conservative hyperparameters

@@ -31,7 +31,7 @@ class OpenSearchFineTuneStack(Stack):
         base_model_id: str = "BAAI/bge-base-en-v1.5",
         training_instance_type: str = "ml.g5.2xlarge",
         inference_instance_type: str = "ml.m5.xlarge",
-        max_documents_poc: int = 5000,
+        max_documents_poc: int = 20000,
         bedrock_model_id: str = "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         **kwargs
     ) -> None:

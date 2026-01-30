@@ -34,7 +34,7 @@ We divide the project into Phase 1 (POC) and Phase 2 (Production/Productization)
 
 *   Users directly provide a cleaned Corpus (txt/jsonl) on S3, or a simple AOS Index Dump.
 *   Support 1-2 specific dense models (e.g., BGE-base-en-v1.5) and OpenSearch sparse models.
-*   **Data Sampling:** Use a subset of the corpus (e.g., N=5000) for POC to speed up iterations, rather than using the full dataset.
+*   **Data Sampling:** Use a subset of the corpus (e.g., N=20000) for POC to speed up iterations, rather than using the full dataset.
 *   Use only Positive Pairs (Query, Doc) for training; Hard Negatives will not be handled initially.
 *   Use SageMaker Real-time inference (provisioned) to simplify deployment.
 

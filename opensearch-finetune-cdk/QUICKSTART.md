@@ -107,7 +107,7 @@ aws stepfunctions start-execution \
     "opensearch_endpoint": "https://your-domain.us-east-1.es.amazonaws.com",
     "index_name": "your-corpus-index",
     "text_field": "content",
-    "max_documents": "5000",
+    "max_documents": "20000",
     "model_name": "my-finetuned-bge-v1",
     "model_type": "dense",
     "base_model_id": "BAAI/bge-base-en-v1.5",
@@ -138,7 +138,7 @@ aws stepfunctions start-execution \
   --input "{
     \"input_type\": \"s3\",
     \"s3_corpus_path\": \"s3://$BUCKET/input-corpus/corpus.jsonl\",
-    \"max_documents\": \"5000\",
+    \"max_documents\": \"20000\",
     \"model_name\": \"my-finetuned-bge-v1\",
     \"model_type\": \"dense\",
     \"base_model_id\": \"BAAI/bge-base-en-v1.5\",

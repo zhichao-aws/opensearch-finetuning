@@ -19,7 +19,7 @@
 ├─────────────────────────────────────────┤
 │ • DataExtractorLambda                   │
 │   - PIT/Scroll API for OpenSearch       │
-│   - Sample N=5000 docs                  │
+│   - Sample N=20000 docs                  │
 │ • S3DataValidatorLambda                 │
 │   - Validate JSONL format               │
 │ → Output: s3://bucket/raw-corpus/       │
@@ -245,7 +245,7 @@ s3://bucket/
   "model_type": "dense|sparse",
   "base_model_id": "BAAI/bge-base-en-v1.5",
   "embedding_dimension": 768,
-  "max_documents": 5000
+  "max_documents": 20000
 }
 ```
 
@@ -255,7 +255,7 @@ s3://bucket/
 
 ## Performance Characteristics
 
-### POC (5000 docs)
+### POC (20000 docs)
 - Data Extraction: 2-5 min
 - Bedrock Query Gen: 10-15 min
 - Training: 15-30 min (ml.g5.2xlarge)
@@ -272,7 +272,7 @@ s3://bucket/
 ## Limitations & Trade-offs
 
 ### POC Constraints
-- Sample 5000 docs (not full dataset)
+- Sample 20000 docs (not full dataset)
 - Positive pairs only (no hard negatives)
 - Real-time inference (no serverless)
 - Conservative hyperparameters

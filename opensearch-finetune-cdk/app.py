@@ -16,7 +16,7 @@ model_type = app.node.try_get_context("model_type") or os.getenv("MODEL_TYPE", "
 base_model_id = app.node.try_get_context("base_model_id") or os.getenv("BASE_MODEL_ID", "BAAI/bge-base-en-v1.5")
 training_instance_type = app.node.try_get_context("training_instance_type") or os.getenv("TRAINING_INSTANCE_TYPE", "ml.g5.2xlarge")
 inference_instance_type = app.node.try_get_context("inference_instance_type") or os.getenv("INFERENCE_INSTANCE_TYPE", "ml.m5.xlarge")
-max_documents_poc = int(app.node.try_get_context("max_documents_poc") or os.getenv("MAX_DOCUMENTS_POC", "5000"))
+max_documents_poc = int(app.node.try_get_context("max_documents_poc") or os.getenv("MAX_DOCUMENTS_POC", "20000"))
 bedrock_model_id = app.node.try_get_context("bedrock_model_id") or os.getenv("BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-4-5-20251001-v1:0")
 
 # Create the main stack
