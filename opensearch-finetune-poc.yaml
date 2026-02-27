@@ -43,6 +43,8 @@ Metadata:
       - Label:
           default: "Deployment Configuration"
         Parameters:
+          - DeployEndpoint
+          - RegisterConnector
           - InferenceInstanceType
           - InitialInstanceCount
       - Label:
@@ -92,6 +94,10 @@ Metadata:
         default: "Learning Rate"
       MaxSeqLength:
         default: "Max Sequence Length"
+      DeployEndpoint:
+        default: "Deploy SageMaker Endpoint"
+      RegisterConnector:
+        default: "Register OpenSearch Connector"
       InferenceInstanceType:
         default: "Inference Instance Type"
       InitialInstanceCount:
@@ -235,7 +241,19 @@ Parameters:
     MinValue: 128
     MaxValue: 2048
 
-  # Deployment Configuration (GPU instances only for inference)
+  # Deployment Configuration
+  DeployEndpoint:
+    Type: String
+    Description: "Whether to deploy the fine-tuned model to a SageMaker endpoint"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  RegisterConnector:
+    Type: String
+    Description: "Whether to register the SageMaker endpoint as an OpenSearch connector"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
   InferenceInstanceType:
     Type: String
     Description: "SageMaker GPU instance type for inference endpoint (GPU required)"
@@ -968,6 +986,8 @@ Resources:
                     "model_name.$": "$.model_name",
                     "base_model_id.$": "$.base_model_id",
                     "opensearch_endpoint.$": "$.opensearch_endpoint",
+                    "deploy_endpoint.$": "$.deploy_endpoint",
+                    "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
                     "s3_corpus_path.$": "$.s3_corpus_path",
@@ -975,7 +995,32 @@ Resources:
                     "text_fields.$": "$.text_fields",
                     "config.$": "States.JsonMerge($.defaults, $.config, false)"
                   },
-                  "Next": "DataSourceChoice"
+                  "Next": "ValidateDeployRegister"
+                },
+                "ValidateDeployRegister": {
+                  "Type": "Choice",
+                  "Comment": "Fail if register_connector=true but deploy_endpoint=false (endpoint required for registration)",
+                  "Choices": [
+                    {
+                      "And": [
+                        {
+                          "Variable": "$.deploy_endpoint",
+                          "StringEquals": "false"
+                        },
+                        {
+                          "Variable": "$.register_connector",
+                          "StringEquals": "true"
+                        }
+                      ],
+                      "Next": "FailInvalidDeployRegister"
+                    }
+                  ],
+                  "Default": "DataSourceChoice"
+                },
+                "FailInvalidDeployRegister": {
+                  "Type": "Fail",
+                  "Cause": "Cannot register connector without deploying endpoint. Set deploy_endpoint=true or register_connector=false.",
+                  "Error": "InvalidDeployRegisterCombination"
                 },
                 "DataSourceChoice": {
                   "Type": "Choice",
@@ -1059,6 +1104,8 @@ Resources:
                     "model_name.$": "$.model_name",
                     "base_model_id.$": "$.base_model_id",
                     "opensearch_endpoint.$": "$.opensearch_endpoint",
+                    "deploy_endpoint.$": "$.deploy_endpoint",
+                    "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
                     "config.$": "$.config"
@@ -1074,6 +1121,8 @@ Resources:
                     "model_name.$": "$.model_name",
                     "base_model_id.$": "$.base_model_id",
                     "opensearch_endpoint.$": "$.opensearch_endpoint",
+                    "deploy_endpoint.$": "$.deploy_endpoint",
+                    "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
                     "config.$": "$.config"
@@ -1320,7 +1369,23 @@ Resources:
                     "EnableManagedSpotTraining": false
                   },
                   "ResultPath": "$.training_job_result",
-                  "Next": "CreateSageMakerModel"
+                  "Next": "CheckDeployEndpoint"
+                },
+                "CheckDeployEndpoint": {
+                  "Type": "Choice",
+                  "Comment": "Check if endpoint deployment is requested",
+                  "Choices": [
+                    {
+                      "Variable": "$.deploy_endpoint",
+                      "StringEquals": "true",
+                      "Next": "CreateSageMakerModel"
+                    }
+                  ],
+                  "Default": "SuccessTrainingOnly"
+                },
+                "SuccessTrainingOnly": {
+                  "Type": "Succeed",
+                  "Comment": "Training completed. Endpoint deployment skipped."
                 },
                 "CreateSageMakerModel": {
                   "Type": "Task",
@@ -1395,7 +1460,7 @@ Resources:
                     {
                       "Variable": "$.endpoint_status_result.EndpointStatus",
                       "StringEquals": "InService",
-                      "Next": "RegisterToOpenSearch"
+                      "Next": "CheckRegisterConnector"
                     },
                     {
                       "Variable": "$.endpoint_status_result.EndpointStatus",
@@ -1409,6 +1474,22 @@ Resources:
                   "Type": "Fail",
                   "Cause": "SageMaker endpoint creation failed",
                   "Error": "EndpointCreationFailed"
+                },
+                "CheckRegisterConnector": {
+                  "Type": "Choice",
+                  "Comment": "Check if OpenSearch connector registration is requested",
+                  "Choices": [
+                    {
+                      "Variable": "$.register_connector",
+                      "StringEquals": "true",
+                      "Next": "RegisterToOpenSearch"
+                    }
+                  ],
+                  "Default": "SuccessEndpointOnly"
+                },
+                "SuccessEndpointOnly": {
+                  "Type": "Succeed",
+                  "Comment": "Endpoint deployed. Connector registration skipped."
                 },
                 "RegisterToOpenSearch": {
                   "Type": "Task",
@@ -1526,6 +1607,8 @@ Resources:
               "input_type": "s3",
               "s3_corpus_path": "${S3CorpusPath}",
               "opensearch_endpoint": "${OpenSearchEndpoint}",
+              "deploy_endpoint": "${DeployEndpoint}",
+              "register_connector": "${RegisterConnector}",
               "index_name": "",
               "text_fields": "",
               "model_name": "${ModelName}",
@@ -1539,6 +1622,8 @@ Resources:
               "input_type": "opensearch",
               "s3_corpus_path": "",
               "opensearch_endpoint": "${OpenSearchEndpoint}",
+              "deploy_endpoint": "${DeployEndpoint}",
+              "register_connector": "${RegisterConnector}",
               "index_name": "${OpenSearchIndexName}",
               "text_fields": "${TextFieldNames}",
               "model_name": "${ModelName}",
@@ -1629,6 +1714,8 @@ Outputs:
         "input_type": "s3",
         "s3_corpus_path": "s3://your-bucket/corpus.jsonl",
         "opensearch_endpoint": "https://your-domain.${AWS::Region}.es.amazonaws.com",
+        "deploy_endpoint": "${DeployEndpoint}",
+        "register_connector": "${RegisterConnector}",
         "index_name": "",
         "text_fields": "",
         "model_name": "${ModelName}",
@@ -1645,6 +1732,8 @@ Outputs:
         "input_type": "opensearch",
         "s3_corpus_path": "",
         "opensearch_endpoint": "https://your-domain.${AWS::Region}.es.amazonaws.com",
+        "deploy_endpoint": "${DeployEndpoint}",
+        "register_connector": "${RegisterConnector}",
         "index_name": "your-index",
         "text_fields": "title,content",
         "model_name": "${ModelName}",
@@ -1661,6 +1750,8 @@ Outputs:
         "input_type": "s3",
         "s3_corpus_path": "s3://your-bucket/corpus.jsonl",
         "opensearch_endpoint": "https://your-domain.${AWS::Region}.es.amazonaws.com",
+        "deploy_endpoint": "${DeployEndpoint}",
+        "register_connector": "${RegisterConnector}",
         "index_name": "",
         "text_fields": "",
         "model_name": "${ModelName}",

@@ -9,7 +9,7 @@ Automated pipeline for fine-tuning retrieval models using Bedrock synthetic data
 3. **Hard Negative Mining** — Build BM25 hard negative candidates
 4. **Teacher Scoring** — Score query-document pairs with a cross-encoder teacher model
 5. **Training** — Fine-tune the embedding model with KL divergence distillation
-6. **Deployment** — Deploy to SageMaker endpoint and register in OpenSearch
+6. **Deployment** *(optional)* — Deploy to SageMaker endpoint and register in OpenSearch
 
 ## Prerequisites
 
@@ -65,6 +65,28 @@ aws cloudformation create-stack \
     ParameterKey=TrainBatchSize,ParameterValue=4
 ```
 
+### Training Only (no endpoint deployment)
+
+```bash
+curl -sL https://raw.githubusercontent.com/zhichao-aws/opensearch-finetuning/main/opensearch-finetune-poc.yaml \
+  | aws s3 cp - s3://<YOUR_BUCKET>/cfn/opensearch-finetune-poc.yaml --region <REGION>
+
+aws cloudformation create-stack \
+  --region <REGION> \
+  --stack-name <STACK_NAME> \
+  --template-url https://<YOUR_BUCKET>.s3.<REGION>.amazonaws.com/cfn/opensearch-finetune-poc.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameters \
+    ParameterKey=ModelName,ParameterValue=<MODEL_NAME> \
+    ParameterKey=InputType,ParameterValue=s3 \
+    ParameterKey=S3CorpusPath,ParameterValue=s3://<BUCKET>/<PATH>/corpus.jsonl \
+    ParameterKey=DeployEndpoint,ParameterValue=false \
+    ParameterKey=RegisterConnector,ParameterValue=false \
+    ParameterKey=ScoringInstanceType,ParameterValue=ml.p4d.24xlarge \
+    ParameterKey=TrainingInstanceType,ParameterValue=ml.p4d.24xlarge \
+    ParameterKey=TrainBatchSize,ParameterValue=4
+```
+
 ### S3 Corpus Format
 
 If using `InputType=s3`, provide a JSONL file where each line has a `text` field:
@@ -80,7 +102,9 @@ If using `InputType=s3`, provide a JSONL file where each line has a `text` field
 |-----------|---------|-------------|
 | **ModelName** | *(required)* | Unique name for the fine-tuned model (alphanumeric/hyphens, max 40 chars) |
 | **InputType** | `s3` | Data source: `s3` or `opensearch` |
-| **OpenSearchEndpoint** | | OpenSearch domain endpoint (`https://...`) |
+| **DeployEndpoint** | `true` | Whether to deploy the fine-tuned model to a SageMaker endpoint |
+| **RegisterConnector** | `true` | Whether to register the SageMaker endpoint as an OpenSearch connector |
+| **OpenSearchEndpoint** | | OpenSearch domain endpoint (required if `InputType=opensearch` or `RegisterConnector=true`) |
 | **OpenSearchIndexName** | | Index to extract documents from (required if `opensearch`) |
 | **TextFieldNames** | `content` | Comma-separated field names for document text |
 | **S3CorpusPath** | | S3 path to corpus JSONL (required if `s3`) |
