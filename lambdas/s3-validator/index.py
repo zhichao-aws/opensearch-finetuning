@@ -16,6 +16,7 @@ Output (on success):
 }
 """
 
+import io
 import json
 import boto3
 from urllib.parse import urlparse
@@ -44,13 +45,13 @@ def handler(event, context):
     if not key.endswith('.jsonl'):
         raise ValueError(f"File must be JSONL format (.jsonl extension), got: {key}")
 
-    # Read and validate content
+    # Stream and validate content line by line to avoid loading entire file into memory
     s3 = boto3.client('s3')
     response = s3.get_object(Bucket=bucket, Key=key)
-    content = response['Body'].read().decode('utf-8')
+    stream = io.TextIOWrapper(response['Body'], encoding='utf-8')
 
     document_count = 0
-    for line_num, line in enumerate(content.strip().split('\n'), start=1):
+    for line_num, line in enumerate(stream, start=1):
         line = line.strip()
         if not line:
             continue

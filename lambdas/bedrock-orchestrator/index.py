@@ -15,6 +15,7 @@ Operations:
 Input varies by operation - see individual function docs.
 """
 
+import io
 import json
 import os
 from datetime import datetime
@@ -49,17 +50,21 @@ def parse_s3_path(s3_path):
     return bucket, key
 
 
-def read_s3_jsonl(bucket, key):
-    """Read JSONL file from S3."""
+def iter_s3_jsonl(bucket, key, max_lines=None):
+    """Stream JSONL file from S3 line by line, yielding parsed JSON objects."""
     s3 = boto3.client('s3')
     response = s3.get_object(Bucket=bucket, Key=key)
-    content = response['Body'].read().decode('utf-8')
+    stream = io.TextIOWrapper(response['Body'], encoding='utf-8')
 
-    documents = []
-    for line in content.strip().split('\n'):
-        if line.strip():
-            documents.append(json.loads(line))
-    return documents
+    count = 0
+    for line in stream:
+        line = line.strip()
+        if not line:
+            continue
+        yield json.loads(line)
+        count += 1
+        if max_lines and count >= max_lines:
+            break
 
 
 def write_s3_file(bucket, key, content, content_type='application/json'):
@@ -98,20 +103,12 @@ def prepare_input(event):
     bucket = os.environ.get('DATA_BUCKET')
     max_documents = event.get('max_documents')
 
-    # Read documents
+    # Stream documents from S3 (only read up to max_documents)
     input_bucket, input_key = parse_s3_path(s3_documents_path)
-    documents = read_s3_jsonl(input_bucket, input_key)
 
-    # Apply max_documents limit if specified
-    if max_documents and len(documents) > max_documents:
-        print(f"Truncating from {len(documents)} to {max_documents} documents")
-        documents = documents[:max_documents]
-
-    print(f"Preparing batch input for {len(documents)} documents")
-
-    # Create batch input records
+    # Create batch input records by streaming input
     batch_records = []
-    for doc in documents:
+    for doc in iter_s3_jsonl(input_bucket, input_key, max_lines=max_documents):
         doc_id = doc.get('id', str(uuid.uuid4()))
         doc_text = doc.get('text', '')
 

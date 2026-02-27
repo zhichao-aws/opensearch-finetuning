@@ -852,7 +852,7 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
-      MemorySize: 10240
+      MemorySize: 8192
       Role: !GetAtt FineTuningLambdaInvokeOpenSearchRole.Arn
       Code:
         S3Bucket: !Ref DataBucket
@@ -886,7 +886,7 @@ Resources:
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
-      MemorySize: 10240
+      MemorySize: 8192
       Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         S3Bucket: !Ref DataBucket
