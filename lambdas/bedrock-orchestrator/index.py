@@ -19,7 +19,6 @@ import io
 import json
 import os
 from datetime import datetime
-import uuid
 from urllib.parse import urlparse
 
 import boto3
@@ -82,6 +81,7 @@ def write_s3_file(bucket, key, content, content_type='application/json'):
 def prepare_input(event):
     """
     Prepare documents for Bedrock batch inference.
+    Uses S3 multipart upload to stream output without accumulating in memory.
 
     Input:
     {
@@ -106,47 +106,89 @@ def prepare_input(event):
     # Stream documents from S3 (only read up to max_documents)
     input_bucket, input_key = parse_s3_path(s3_documents_path)
 
-    # Create batch input records by streaming input
-    batch_records = []
-    for doc in iter_s3_jsonl(input_bucket, input_key, max_lines=max_documents):
-        doc_id = doc.get('id', str(uuid.uuid4()))
-        doc_text = doc.get('text', '')
-
-        # Truncate document if too long (Bedrock has input limits)
-        max_doc_length = 8000  # Leave room for prompt template
-        if len(doc_text) > max_doc_length:
-            doc_text = doc_text[:max_doc_length] + "..."
-
-        prompt = QUERY_GENERATION_PROMPT.format(document_text=doc_text)
-
-        # Format for Bedrock batch inference (Claude model)
-        record = {
-            "recordId": doc_id,
-            "modelInput": {
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1024,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            }
-        }
-        batch_records.append(record)
-
-    # Write batch input as JSONL
-    batch_input_content = '\n'.join(json.dumps(r) for r in batch_records)
     timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
     s3_input_key = f"bedrock-batch/input/batch_input_{timestamp}.jsonl"
-    s3_input_path = write_s3_file(bucket, s3_input_key, batch_input_content, 'application/jsonl')
 
+    # Use multipart upload to stream output to S3 without holding everything in memory
+    s3 = boto3.client('s3')
+    mpu = s3.create_multipart_upload(Bucket=bucket, Key=s3_input_key, ContentType='application/jsonl')
+    upload_id = mpu['UploadId']
+
+    parts = []
+    part_number = 1
+    buffer = io.BytesIO()
+    # S3 multipart minimum part size is 5MB (except last part)
+    PART_SIZE = 6 * 1024 * 1024
+    record_count = 0
+
+    try:
+        for doc_idx, doc in enumerate(iter_s3_jsonl(input_bucket, input_key, max_lines=max_documents)):
+            doc_id = doc.get('id', str(doc_idx))
+            doc_text = doc.get('text', '')
+
+            # Truncate document if too long (Bedrock has input limits)
+            max_doc_length = 8000  # Leave room for prompt template
+            if len(doc_text) > max_doc_length:
+                doc_text = doc_text[:max_doc_length] + "..."
+
+            prompt = QUERY_GENERATION_PROMPT.format(document_text=doc_text)
+
+            record = {
+                "recordId": doc_id,
+                "modelInput": {
+                    "anthropic_version": "bedrock-2023-05-31",
+                    "max_tokens": 1024,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ]
+                }
+            }
+
+            line = json.dumps(record) + '\n'
+            buffer.write(line.encode('utf-8'))
+            record_count += 1
+
+            # Flush buffer as a part when it exceeds the threshold
+            if buffer.tell() >= PART_SIZE:
+                buffer.seek(0)
+                part = s3.upload_part(
+                    Bucket=bucket, Key=s3_input_key,
+                    UploadId=upload_id, PartNumber=part_number,
+                    Body=buffer.read()
+                )
+                parts.append({'ETag': part['ETag'], 'PartNumber': part_number})
+                part_number += 1
+                buffer = io.BytesIO()
+
+        # Upload remaining data
+        if buffer.tell() > 0:
+            buffer.seek(0)
+            part = s3.upload_part(
+                Bucket=bucket, Key=s3_input_key,
+                UploadId=upload_id, PartNumber=part_number,
+                Body=buffer.read()
+            )
+            parts.append({'ETag': part['ETag'], 'PartNumber': part_number})
+
+        s3.complete_multipart_upload(
+            Bucket=bucket, Key=s3_input_key,
+            UploadId=upload_id,
+            MultipartUpload={'Parts': parts}
+        )
+    except Exception:
+        s3.abort_multipart_upload(Bucket=bucket, Key=s3_input_key, UploadId=upload_id)
+        raise
+
+    s3_input_path = f"s3://{bucket}/{s3_input_key}"
     print(f"Batch input written to {s3_input_path}")
 
     return {
         "statusCode": 200,
         "s3_input_path": s3_input_path,
-        "record_count": len(batch_records)
+        "record_count": record_count
     }
 
 

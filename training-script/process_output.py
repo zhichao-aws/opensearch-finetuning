@@ -122,7 +122,7 @@ def main():
     doc_id_to_idx = {}
 
     for idx, doc in enumerate(documents):
-        doc_id = doc['id']
+        doc_id = doc.get('id', str(idx))
         doc_text = doc['text']
         doc_ids.append(doc_id)
         doc_texts.append(doc_text)
