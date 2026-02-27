@@ -779,6 +779,19 @@ Resources:
           import urllib.request
           import os
           import ssl
+          import time
+
+          def download_with_retry(url, tmp_path, max_retries=3, delay=2):
+              for attempt in range(max_retries):
+                  try:
+                      urllib.request.urlretrieve(url, tmp_path)
+                      return
+                  except Exception as e:
+                      print(f"Download attempt {attempt + 1}/{max_retries} failed: {e}")
+                      if attempt < max_retries - 1:
+                          time.sleep(delay * (attempt + 1))
+                      else:
+                          raise
 
           def lambda_handler(event, context):
               print(f"Event: {event}")
@@ -806,7 +819,7 @@ Resources:
                       tmp_path = f"/tmp/{os.path.basename(s3_key)}"
 
                       print(f"Downloading {url} to {tmp_path}")
-                      urllib.request.urlretrieve(url, tmp_path)
+                      download_with_retry(url, tmp_path)
 
                       print(f"Uploading to s3://{bucket}/{s3_key}")
                       s3.upload_file(tmp_path, bucket, s3_key)
