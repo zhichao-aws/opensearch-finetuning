@@ -108,6 +108,7 @@ If using `InputType=s3`, provide a JSONL file where each line has a `text` field
 | **OpenSearchIndexName** | | Index to extract documents from (required if `opensearch`) |
 | **TextFieldNames** | `content` | Comma-separated field names for document text |
 | **S3CorpusPath** | | S3 path to corpus JSONL (required if `s3`) |
+| **SampleQueryUri** | | (Optional) S3 URI to sample queries JSONL for few-shot prompting |
 | **BaseModelId** | `BAAI/bge-m3` | HuggingFace model ID for base model |
 | **BedrockModelId** | `us.anthropic.claude-haiku-4-5-20251001-v1:0` | Bedrock model for query generation |
 | **MaxCorpusDocuments** | `10000000` | Max documents for BM25 hard negative pool |

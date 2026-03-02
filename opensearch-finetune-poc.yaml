@@ -23,6 +23,7 @@ Metadata:
         Parameters:
           - InputType
           - S3CorpusPath
+          - SampleQueryUri
           - MaxCorpusDocuments
           - MaxQueryDocuments
       - Label:
@@ -72,6 +73,8 @@ Metadata:
         default: "Input Type (s3/opensearch)"
       S3CorpusPath:
         default: "S3 Corpus Path"
+      SampleQueryUri:
+        default: "Sample Query URI (Optional)"
       MaxCorpusDocuments:
         default: "Max Corpus Documents (BM25 pool)"
       MaxQueryDocuments:
@@ -156,6 +159,14 @@ Parameters:
   S3CorpusPath:
     Type: String
     Description: "S3 path to corpus JSONL file (required if InputType is 's3'). Format: s3://bucket/path/corpus.jsonl"
+    Default: ""
+
+  SampleQueryUri:
+    Type: String
+    Description: >
+      (Optional) S3 URI to a JSONL file with sample queries for few-shot prompting.
+      Each line should have 'text', 'query', or 'anchor' field.
+      When provided, 10 random samples are included in each prompt to guide query style.
     Default: ""
 
   MaxCorpusDocuments:
@@ -1006,6 +1017,7 @@ Resources:
                     "s3_corpus_path.$": "$.s3_corpus_path",
                     "index_name.$": "$.index_name",
                     "text_fields.$": "$.text_fields",
+                    "sample_query_uri.$": "$.sample_query_uri",
                     "config.$": "States.JsonMerge($.defaults, $.config, false)"
                   },
                   "Next": "ValidateDeployRegister"
@@ -1121,6 +1133,7 @@ Resources:
                     "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
+                    "sample_query_uri.$": "$.sample_query_uri",
                     "config.$": "$.config"
                   },
                   "Next": "PrepareBedrockInput"
@@ -1138,6 +1151,7 @@ Resources:
                     "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
+                    "sample_query_uri.$": "$.sample_query_uri",
                     "config.$": "$.config"
                   },
                   "Next": "PrepareBedrockInput"
@@ -1150,7 +1164,8 @@ Resources:
                     "Payload": {
                       "operation": "prepare_input",
                       "s3_documents_path.$": "$.documents_s3_path",
-                      "max_documents.$": "$.max_query_documents"
+                      "max_documents.$": "$.max_query_documents",
+                      "sample_query_uri.$": "$.sample_query_uri"
                     }
                   },
                   "ResultSelector": {
@@ -1628,6 +1643,7 @@ Resources:
               "base_model_id": "${BaseModelId}",
               "max_corpus_documents": ${MaxCorpusDocuments},
               "max_query_documents": ${MaxQueryDocuments},
+              "sample_query_uri": "${SampleQueryUri}",
               "config": {}
             }
         - !Sub |
@@ -1643,6 +1659,7 @@ Resources:
               "base_model_id": "${BaseModelId}",
               "max_corpus_documents": ${MaxCorpusDocuments},
               "max_query_documents": ${MaxQueryDocuments},
+              "sample_query_uri": "${SampleQueryUri}",
               "config": {}
             }
 
@@ -1735,6 +1752,7 @@ Outputs:
         "base_model_id": "${BaseModelId}",
         "max_corpus_documents": ${MaxCorpusDocuments},
         "max_query_documents": ${MaxQueryDocuments},
+        "sample_query_uri": "",
         "config": {}
       }
 
@@ -1753,6 +1771,7 @@ Outputs:
         "base_model_id": "${BaseModelId}",
         "max_corpus_documents": ${MaxCorpusDocuments},
         "max_query_documents": ${MaxQueryDocuments},
+        "sample_query_uri": "",
         "config": {}
       }
 
@@ -1771,6 +1790,7 @@ Outputs:
         "base_model_id": "${BaseModelId}",
         "max_corpus_documents": ${MaxCorpusDocuments},
         "max_query_documents": ${MaxQueryDocuments},
+        "sample_query_uri": "",
         "config": {
           "training_instance_type": "${TrainingInstanceType}",
           "inference_instance_type": "${InferenceInstanceType}",

@@ -18,6 +18,7 @@ Input varies by operation - see individual function docs.
 import io
 import json
 import os
+import random
 from datetime import datetime
 from urllib.parse import urlparse
 
@@ -38,6 +39,22 @@ Document:
 Generate exactly 5 queries in the following JSON format:
 {{"queries": ["query1", "query2", "query3", "query4", "query5"]}}
 
+Only return the JSON, no additional text."""
+
+QUERY_GENERATION_PROMPT_WITH_SAMPLES = """You are an expert at generating search queries.
+
+Given the following document, generate 5 diverse search queries that a user might use to find this document.
+
+Here are some example queries from this dataset for reference. Generate queries similar in style to these examples:
+{sample_queries}
+
+Document:
+{document_text}
+
+Generate exactly 5 queries in the following JSON format:
+{{"queries": ["query1", "query2", "query3", "query4", "query5"]}}
+
+Make sure your queries are diverse (different lengths, aspects, intents).
 Only return the JSON, no additional text."""
 
 
@@ -78,6 +95,28 @@ def write_s3_file(bucket, key, content, content_type='application/json'):
     return f"s3://{bucket}/{key}"
 
 
+def load_sample_queries(s3_uri, max_samples=100):
+    """Load sample queries from S3 JSONL file.
+
+    Returns a list of query strings. Up to max_samples are loaded.
+    Each line should have 'text', 'query', or 'anchor' field.
+    """
+    if not s3_uri:
+        return []
+    try:
+        bucket, key = parse_s3_path(s3_uri)
+        queries = []
+        for record in iter_s3_jsonl(bucket, key, max_lines=max_samples):
+            q = record.get('text') or record.get('query') or record.get('anchor') or ''
+            if q.strip():
+                queries.append(q.strip())
+        print(f"Loaded {len(queries)} sample queries from {s3_uri}")
+        return queries
+    except Exception as e:
+        print(f"Warning: failed to load sample queries from {s3_uri}: {e}")
+        return []
+
+
 def prepare_input(event):
     """
     Prepare documents for Bedrock batch inference.
@@ -102,6 +141,8 @@ def prepare_input(event):
 
     bucket = os.environ.get('DATA_BUCKET')
     max_documents = event.get('max_documents')
+    sample_query_uri = event.get('sample_query_uri', '')
+    sample_queries = load_sample_queries(sample_query_uri)
 
     # Stream documents from S3 (only read up to max_documents)
     input_bucket, input_key = parse_s3_path(s3_documents_path)
@@ -131,7 +172,14 @@ def prepare_input(event):
             if len(doc_text) > max_doc_length:
                 doc_text = doc_text[:max_doc_length] + "..."
 
-            prompt = QUERY_GENERATION_PROMPT.format(document_text=doc_text)
+            if sample_queries:
+                selected = random.sample(sample_queries, min(10, len(sample_queries)))
+                prompt = QUERY_GENERATION_PROMPT_WITH_SAMPLES.format(
+                    document_text=doc_text,
+                    sample_queries='\n'.join(f'- {q}' for q in selected)
+                )
+            else:
+                prompt = QUERY_GENERATION_PROMPT.format(document_text=doc_text)
 
             record = {
                 "recordId": doc_id,
