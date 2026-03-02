@@ -268,9 +268,20 @@ def main():
         model.save_pretrained(args.model_dir)
         print(f"Model saved to: {args.model_dir}")
 
+        # Remove checkpoints and training artifacts from model dir
+        # so SageMaker's auto-packaging won't include them
+        import shutil
+        for item in os.listdir(args.model_dir):
+            item_path = os.path.join(args.model_dir, item)
+            if os.path.isdir(item_path) and item.startswith("checkpoint-"):
+                shutil.rmtree(item_path)
+                print(f"Removed checkpoint: {item}")
+            elif item in ("training_args.bin", "optimizer.pt", "scheduler.pt"):
+                os.remove(item_path)
+                print(f"Removed {item}")
+
         # Copy inference code to model directory (required for SageMaker inference)
         # Must be in code/ subdirectory for SageMaker to auto-install requirements.txt
-        import shutil
         code_dir = Path(__file__).parent
         model_code_dir = Path(args.model_dir) / "code"
         model_code_dir.mkdir(exist_ok=True)
