@@ -1269,7 +1269,7 @@ Resources:
                       "VolumeSizeInGB": 100
                     },
                     "StoppingCondition": {
-                      "MaxRuntimeInSeconds": 14400
+                      "MaxRuntimeInSeconds": 86400
                     },
                     "RoleArn": "${SageMakerTrainingRoleArn}",
                     "HyperParameters": {

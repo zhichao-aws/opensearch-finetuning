@@ -23,17 +23,32 @@ import json
 import os
 import re
 import logging
+import time
+from multiprocessing import Pool
 from pathlib import Path
 from urllib.parse import urlparse
 
 import boto3
 import bm25s
+import numpy as np
 
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Shared data for multiprocessing workers (set before Pool creation, inherited via fork)
+_shared_retriever = None
+_shared_query_tokens = None
+
+
+def _retrieve_range(args):
+    """Worker: retrieve BM25 results for a slice of queries."""
+    start, end, top_k = args
+    chunk = _shared_query_tokens[start:end]
+    results, scores = _shared_retriever.retrieve(chunk, k=top_k)
+    return results, scores
 
 
 def parse_s3_path(s3_path):
@@ -114,6 +129,7 @@ def main():
     s3 = boto3.client('s3')
 
     # Load corpus documents
+    t0 = time.time()
     logger.info(f"Loading documents from {args.documents_s3_path}")
     documents = read_s3_jsonl(args.documents_s3_path)
 
@@ -129,11 +145,14 @@ def main():
         doc_id_to_idx[doc_id] = idx
 
     # Apply corpus size limit for BM25 pool
-    if args.max_corpus_documents > 0 and len(documents) > args.max_corpus_documents:
-        logger.info(f"Truncating corpus from {len(documents)} to {args.max_corpus_documents} documents")
-        documents = documents[:args.max_corpus_documents]
+    if args.max_corpus_documents > 0 and len(doc_texts) > args.max_corpus_documents:
+        logger.info(f"Truncating corpus from {len(doc_texts)} to {args.max_corpus_documents} documents")
+        doc_ids = doc_ids[:args.max_corpus_documents]
+        doc_texts = doc_texts[:args.max_corpus_documents]
+        doc_id_to_idx = {doc_id: idx for idx, doc_id in enumerate(doc_ids)}
 
-    logger.info(f"Loaded {len(documents)} documents")
+    del documents  # Free raw dicts to save memory
+    logger.info(f"Loaded {len(doc_texts)} documents in {time.time() - t0:.1f}s")
 
     # List Bedrock output files
     output_bucket, output_prefix = parse_s3_path(args.output_s3_path)
@@ -203,16 +222,39 @@ def main():
     logger.info(f"Mining hard negatives (num_negatives={num_negatives})...")
 
     # Build BM25 index over corpus
-    logger.info(f"Building BM25 index for {len(doc_texts)} documents...")
+    t0 = time.time()
+    logger.info(f"Tokenizing and indexing {len(doc_texts)} documents...")
     corpus_tokens = bm25s.tokenize(doc_texts)
     retriever = bm25s.BM25()
     retriever.index(corpus_tokens)
+    del corpus_tokens
+    logger.info(f"BM25 index built in {time.time() - t0:.1f}s")
 
-    # Retrieve top candidates for all queries at once
+    # Tokenize queries
     top_k = min(num_negatives + 5, len(doc_texts))
-    logger.info(f"Retrieving top-{top_k} candidates for {len(queries)} queries...")
-    query_tokens = bm25s.tokenize(queries)
-    results, scores = retriever.retrieve(query_tokens, k=top_k)
+    query_tokens = bm25s.tokenize(queries, return_ids=False)
+
+    # Retrieve in parallel across all CPU cores
+    global _shared_retriever, _shared_query_tokens
+    _shared_retriever = retriever
+    _shared_query_tokens = query_tokens
+
+    n_processes = os.cpu_count() or 1
+    n_queries = len(queries)
+    chunk_size = (n_queries + n_processes - 1) // n_processes
+    ranges = [(i, min(i + chunk_size, n_queries), top_k) for i in range(0, n_queries, chunk_size)]
+
+    logger.info(f"Retrieving top-{top_k} for {n_queries} queries with {n_processes} parallel workers...")
+    t0 = time.time()
+    with Pool(n_processes) as pool:
+        chunk_results = pool.map(_retrieve_range, ranges)
+
+    results = np.concatenate([r[0] for r in chunk_results], axis=0)
+    scores = np.concatenate([r[1] for r in chunk_results], axis=0)
+    del chunk_results
+    _shared_retriever = None
+    _shared_query_tokens = None
+    logger.info(f"Retrieval completed in {time.time() - t0:.1f}s")
 
     # Build training samples with hard negatives
     training_samples = []
