@@ -280,17 +280,6 @@ def main():
                 os.remove(item_path)
                 print(f"Removed {item}")
 
-        # Copy inference code to model directory (required for SageMaker inference)
-        # Must be in code/ subdirectory for SageMaker to auto-install requirements.txt
-        code_dir = Path(__file__).parent
-        model_code_dir = Path(args.model_dir) / "code"
-        model_code_dir.mkdir(exist_ok=True)
-        for code_file in ["inference.py", "requirements.txt"]:
-            src = code_dir / code_file
-            if src.exists():
-                shutil.copy(src, model_code_dir)
-                print(f"Copied {code_file} to {model_code_dir}")
-
         # Create model tarball for SageMaker (exclude checkpoints and unnecessary files)
         model_tar_path = os.path.join(args.model_dir, "model.tar.gz")
         exclude_patterns = {"model.tar.gz", "checkpoint-", "runs", "training_args.bin", "optimizer.pt", "scheduler.pt"}

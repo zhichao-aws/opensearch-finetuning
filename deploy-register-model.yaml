@@ -1,0 +1,831 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Deploy a fine-tuned model to SageMaker using TEI (Text Embeddings Inference)
+  and optionally register it as a remote model in OpenSearch.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: "Model Configuration"
+        Parameters:
+          - ModelName
+          - ModelDataUrl
+      - Label:
+          default: "SageMaker Deployment"
+        Parameters:
+          - InferenceInstanceType
+          - InitialInstanceCount
+      - Label:
+          default: "OpenSearch Registration"
+        Parameters:
+          - OpenSearchEndpoint
+          - RegisterConnector
+          - FineTuningLambdaInvokeOpenSearchRoleName
+      - Label:
+          default: "Lambda Source Configuration"
+        Parameters:
+          - RegisterModelLambdaZipUrl
+    ParameterLabels:
+      ModelName:
+        default: "Model Name"
+      ModelDataUrl:
+        default: "Model Artifact S3 Path"
+      InferenceInstanceType:
+        default: "Inference Instance Type"
+      InitialInstanceCount:
+        default: "Initial Instance Count"
+      OpenSearchEndpoint:
+        default: "OpenSearch Domain Endpoint"
+      RegisterConnector:
+        default: "Register OpenSearch Connector"
+      FineTuningLambdaInvokeOpenSearchRoleName:
+        default: "Lambda OpenSearch Role Name"
+      RegisterModelLambdaZipUrl:
+        default: "Register Model Lambda Zip URL"
+
+Parameters:
+  ModelName:
+    Type: String
+    Description: "Unique name for the model (alphanumeric, hyphens only, max 40 chars)"
+    AllowedPattern: "^[a-zA-Z0-9](-*[a-zA-Z0-9]){0,39}"
+    ConstraintDescription: "Max 40 chars, alphanumeric and hyphens only"
+
+  ModelDataUrl:
+    Type: String
+    Description: "S3 path to model.tar.gz (e.g., s3://bucket/path/model.tar.gz)"
+    AllowedPattern: "^s3://.*"
+    ConstraintDescription: "Must be a valid S3 path starting with s3://"
+
+  OpenSearchEndpoint:
+    Type: String
+    Description: "OpenSearch domain endpoint (required if RegisterConnector is true)"
+    AllowedPattern: "https://.*|^$"
+    ConstraintDescription: "Must be a valid OpenSearch endpoint starting with https:// or empty"
+    Default: ""
+
+  RegisterConnector:
+    Type: String
+    Description: "Whether to register the SageMaker endpoint as an OpenSearch connector"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  InferenceInstanceType:
+    Type: String
+    Description: "SageMaker GPU instance type for inference endpoint"
+    Default: "ml.g5.xlarge"
+    AllowedValues:
+      - "ml.g4dn.xlarge"
+      - "ml.g4dn.2xlarge"
+      - "ml.g5.xlarge"
+      - "ml.g5.2xlarge"
+
+  InitialInstanceCount:
+    Type: Number
+    Description: "Initial instance count for inference endpoint"
+    Default: 1
+    MinValue: 1
+    MaxValue: 4
+
+  FineTuningLambdaInvokeOpenSearchRoleName:
+    Type: String
+    Default: "FineTuning-LambdaInvokeOpenSearchRole"
+    AllowedPattern: "[a-zA-Z0-9+=,.@_-]+"
+    ConstraintDescription: "Must use alphanumeric and '+=,.@-_' characters."
+    Description: >
+      The name of the IAM role used by Lambda to invoke OpenSearch domain.
+      IMPORTANT: Before deploying this template, this role must be mapped to OpenSearch
+      backend roles with appropriate permissions (e.g., ml_full_access for ML operations).
+      The role will be created automatically if it does not exist.
+
+  RegisterModelLambdaZipUrl:
+    Type: String
+    Description: "URL to Register Model Lambda zip (GitHub release)"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/register-model-lambda.zip"
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      TEIImage: "683313688378.dkr.ecr.us-east-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    us-east-2:
+      TEIImage: "257758044811.dkr.ecr.us-east-2.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    us-west-1:
+      TEIImage: "746614075791.dkr.ecr.us-west-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    us-west-2:
+      TEIImage: "246618743249.dkr.ecr.us-west-2.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    eu-west-1:
+      TEIImage: "141502667606.dkr.ecr.eu-west-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    eu-central-1:
+      TEIImage: "492215442770.dkr.ecr.eu-central-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    ap-northeast-1:
+      TEIImage: "354813040037.dkr.ecr.ap-northeast-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    ap-southeast-1:
+      TEIImage: "121021644041.dkr.ecr.ap-southeast-1.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+    ap-southeast-2:
+      TEIImage: "783357654285.dkr.ecr.ap-southeast-2.amazonaws.com/tei:2.0.1-tei1.8.2-gpu-py310-cu122-ubuntu22.04"
+
+Resources:
+  # =============================================================================
+  # IAM Roles
+  # =============================================================================
+
+  # SageMaker Endpoint Role
+  SageMakerEndpointRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ModelName}-SageMakerEndpointRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: sagemaker.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3ModelAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource: "*"
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: "*"
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/sagemaker/*"
+
+  # OpenSearch Remote Inference Role
+  OpenSearchRemoteInferenceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "OpenSearch-RemoteInference-${ModelName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: es.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: es.aws.internal
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SageMakerInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:InvokeEndpoint
+                  - sagemaker:InvokeEndpointAsync
+                Resource: "*"
+
+  # Helper Lambda Role (for creating/managing the LambdaInvokeOpenSearch role)
+  HelperLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ModelName}-HelperLambdaRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: IAMAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - iam:ListRoles
+                  - iam:GetRole
+                  - iam:CreateRole
+                  - iam:GetRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:PassRole
+                Resource: "*"
+
+  # Step Functions Execution Role
+  StepFunctionsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ModelName}-DeployRegisterSFRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: SageMakerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateModel
+                  - sagemaker:DescribeModel
+                  - sagemaker:CreateEndpointConfig
+                  - sagemaker:DescribeEndpointConfig
+                  - sagemaker:CreateEndpoint
+                  - sagemaker:DescribeEndpoint
+                  - sagemaker:AddTags
+                Resource: "*"
+        - PolicyName: LambdaInvoke
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt RegisterModelLambda.Arn
+        - PolicyName: PassRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt SageMakerEndpointRole.Arn
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogDelivery
+                  - logs:GetLogDelivery
+                  - logs:UpdateLogDelivery
+                  - logs:DeleteLogDelivery
+                  - logs:ListLogDeliveries
+                  - logs:PutResourcePolicy
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: "*"
+
+  # Trigger Lambda Role
+  TriggerLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ModelName}-DeployTriggerLambdaRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: StepFunctionsAndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource: "*"
+
+  # =============================================================================
+  # Helper Lambda (creates LambdaInvokeOpenSearch role if not exists)
+  # =============================================================================
+  HelperLambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: [HelperLambdaRole, OpenSearchRemoteInferenceRole]
+    Properties:
+      FunctionName: !Sub "${ModelName}-HelperLambda"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt HelperLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          import time
+
+          def lambda_handler(event, context):
+              print(f"Event: {event}")
+              if event['RequestType'] in ('Delete', 'Update'):
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+
+              try:
+                  props = event['ResourceProperties']
+                  role_name = props['RoleName']
+                  os_invoke_role_arn = props['OpenSearchInvokeModelRoleArn']
+                  iam = boto3.client('iam')
+
+                  # Create role if not exists
+                  if not role_exists(iam, role_name):
+                      create_role(iam, role_name)
+                      print(f"Created role: {role_name}")
+
+                  # Ensure PassRole policy for OpenSearchRemoteInferenceRole
+                  ensure_passrole_policy(iam, role_name, os_invoke_role_arn)
+
+                  role_arn = iam.get_role(RoleName=role_name)['Role']['Arn']
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                      {'RoleArn': role_arn})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+          def role_exists(iam, role_name):
+              try:
+                  iam.get_role(RoleName=role_name)
+                  return True
+              except iam.exceptions.NoSuchEntityException:
+                  return False
+
+          def create_role(iam, role_name):
+              region = boto3.session.Session().region_name
+              partition = 'aws-cn' if region.startswith('cn-') else 'aws-us-gov' if region.startswith('us-gov-') else 'aws'
+              iam.create_role(
+                  RoleName=role_name,
+                  AssumeRolePolicyDocument=json.dumps({
+                      "Version": "2012-10-17",
+                      "Statement": [{
+                          "Effect": "Allow",
+                          "Principal": {"Service": "lambda.amazonaws.com"},
+                          "Action": "sts:AssumeRole"
+                      }]
+                  }),
+                  Description='Role for Lambda to invoke OpenSearch ML Commons')
+              time.sleep(5)
+              iam.put_role_policy(
+                  RoleName=role_name,
+                  PolicyName='OpenSearchAccess',
+                  PolicyDocument=json.dumps({
+                      "Version": "2012-10-17",
+                      "Statement": [
+                          {"Effect": "Allow", "Action": [
+                              "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"
+                          ], "Resource": "*"},
+                          {"Effect": "Allow", "Action": [
+                              "es:ESHttpGet", "es:ESHttpPost", "es:ESHttpPut", "es:ESHttpDelete"
+                          ], "Resource": f"arn:{partition}:es:*:*:*"}
+                      ]
+                  }))
+              time.sleep(5)
+
+          def ensure_passrole_policy(iam, role_name, os_invoke_role_arn):
+              policy_name = 'ModelPassRole'
+              try:
+                  existing = iam.get_role_policy(RoleName=role_name, PolicyName=policy_name)
+                  policy = existing['PolicyDocument']
+                  # Check if this role ARN already in policy
+                  for stmt in policy.get('Statement', []):
+                      if stmt.get('Resource') == os_invoke_role_arn:
+                          print("PassRole policy already exists for this role")
+                          return
+                  policy['Statement'].append(
+                      {"Effect": "Allow", "Action": ["iam:PassRole"], "Resource": os_invoke_role_arn})
+                  iam.put_role_policy(RoleName=role_name, PolicyName=policy_name,
+                      PolicyDocument=json.dumps(policy))
+              except iam.exceptions.NoSuchEntityException:
+                  iam.put_role_policy(
+                      RoleName=role_name,
+                      PolicyName=policy_name,
+                      PolicyDocument=json.dumps({
+                          "Version": "2012-10-17",
+                          "Statement": [
+                              {"Effect": "Allow", "Action": ["iam:PassRole"], "Resource": os_invoke_role_arn}
+                          ]
+                      }))
+              time.sleep(5)
+              print(f"PassRole policy updated for {os_invoke_role_arn}")
+
+  # Custom Resource to setup the LambdaInvokeOpenSearch role
+  SetupLambdaOpenSearchRole:
+    Type: Custom::SetupRole
+    DependsOn: [HelperLambdaFunction, OpenSearchRemoteInferenceRole]
+    Properties:
+      ServiceToken: !GetAtt HelperLambdaFunction.Arn
+      RoleName: !Ref FineTuningLambdaInvokeOpenSearchRoleName
+      OpenSearchInvokeModelRoleArn: !GetAtt OpenSearchRemoteInferenceRole.Arn
+
+  # =============================================================================
+  # S3 Bucket & Download Helper (downloads Lambda zip from GitHub to S3)
+  # =============================================================================
+  LambdaCodeBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    Properties:
+      BucketName: !Sub "${ModelName}-code-${AWS::AccountId}"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+  DownloadHelperLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ModelName}-DownloadHelperRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3AndLogs
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource:
+                  - !GetAtt LambdaCodeBucket.Arn
+                  - !Sub "${LambdaCodeBucket.Arn}/*"
+
+  DownloadHelperLambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: [DownloadHelperLambdaRole, LambdaCodeBucket]
+    Properties:
+      FunctionName: !Sub "${ModelName}-DownloadHelper"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 300
+      MemorySize: 256
+      Role: !GetAtt DownloadHelperLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import urllib.request
+          import os
+          import time
+
+          def download_with_retry(url, tmp_path, max_retries=3, delay=2):
+              for attempt in range(max_retries):
+                  try:
+                      urllib.request.urlretrieve(url, tmp_path)
+                      return
+                  except Exception as e:
+                      print(f"Download attempt {attempt + 1}/{max_retries} failed: {e}")
+                      if attempt < max_retries - 1:
+                          time.sleep(delay * (attempt + 1))
+                      else:
+                          raise
+
+          def lambda_handler(event, context):
+              print(f"Event: {event}")
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+              try:
+                  bucket = event['ResourceProperties']['S3Bucket']
+                  urls = event['ResourceProperties']['ZipUrls']
+                  s3 = boto3.client('s3')
+                  for url_config in urls:
+                      url = url_config['url']
+                      s3_key = url_config['s3_key']
+                      tmp_path = f"/tmp/{os.path.basename(s3_key)}"
+                      print(f"Downloading {url} to {tmp_path}")
+                      download_with_retry(url, tmp_path)
+                      print(f"Uploading to s3://{bucket}/{s3_key}")
+                      s3.upload_file(tmp_path, bucket, s3_key)
+                      os.remove(tmp_path)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Status': 'SUCCESS'})
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  DownloadLambdaZips:
+    Type: Custom::DownloadLambdaZips
+    DependsOn: [LambdaCodeBucket, DownloadHelperLambdaFunction]
+    Properties:
+      ServiceToken: !GetAtt DownloadHelperLambdaFunction.Arn
+      S3Bucket: !Ref LambdaCodeBucket
+      ZipUrls:
+        - url: !Ref RegisterModelLambdaZipUrl
+          s3_key: "lambda-zips/register-model.zip"
+
+  # =============================================================================
+  # Lambda Functions
+  # =============================================================================
+
+  # Register Model Lambda
+  RegisterModelLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: [SetupLambdaOpenSearchRole, DownloadLambdaZips]
+    Properties:
+      FunctionName: !Sub "${ModelName}-RegisterModel"
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 512
+      Role:
+        Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FineTuningLambdaInvokeOpenSearchRoleName}"
+      Environment:
+        Variables:
+          OPENSEARCH_REMOTE_INFERENCE_ROLE_ARN: !GetAtt OpenSearchRemoteInferenceRole.Arn
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: "lambda-zips/register-model.zip"
+
+  # Trigger Lambda Function
+  TriggerLambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ModelName}-DeployTrigger"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 60
+      MemorySize: 128
+      Role: !GetAtt TriggerLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+
+          def lambda_handler(event, context):
+              print(f"Event: {event}")
+              request_type = event['RequestType']
+
+              if request_type in ('Delete', 'Update'):
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+
+              try:
+                  props = event['ResourceProperties']
+                  sfn = boto3.client('stepfunctions')
+                  input_payload = json.loads(props['ExecutionInput'])
+                  response = sfn.start_execution(
+                      stateMachineArn=props['StateMachineArn'],
+                      input=json.dumps(input_payload)
+                  )
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {
+                      'ExecutionArn': response['executionArn']
+                  })
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # =============================================================================
+  # CloudWatch Log Group for State Machine
+  # =============================================================================
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/stepfunctions/${ModelName}-DeployRegisterStateMachine"
+      RetentionInDays: 14
+
+  # =============================================================================
+  # Step Functions State Machine
+  # =============================================================================
+  DeployAndRegisterStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    DependsOn:
+      - RegisterModelLambda
+    Properties:
+      StateMachineName: !Sub "${ModelName}-DeployRegisterStateMachine"
+      RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
+      LoggingConfiguration:
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: !GetAtt StateMachineLogGroup.Arn
+        Level: ALL
+        IncludeExecutionData: true
+      TracingConfiguration:
+        Enabled: true
+      DefinitionString:
+        Fn::Sub:
+          - |
+            {
+              "Comment": "Deploy model to SageMaker (TEI) and register to OpenSearch",
+              "StartAt": "CreateSageMakerModel",
+              "States": {
+                "CreateSageMakerModel": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createModel",
+                  "Parameters": {
+                    "ModelName.$": "States.Format('{}-model', $.model_name)",
+                    "PrimaryContainer": {
+                      "Image": "${TEIImage}",
+                      "ModelDataUrl.$": "$.model_data_url",
+                      "Environment": {
+                        "HF_MODEL_ID": "/opt/ml/model"
+                      }
+                    },
+                    "ExecutionRoleArn": "${SageMakerEndpointRoleArn}"
+                  },
+                  "ResultPath": "$.model_result",
+                  "Next": "CreateEndpointConfig"
+                },
+                "CreateEndpointConfig": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createEndpointConfig",
+                  "Parameters": {
+                    "EndpointConfigName.$": "States.Format('{}-config', $.model_name)",
+                    "ProductionVariants": [
+                      {
+                        "VariantName": "AllTraffic",
+                        "ModelName.$": "States.Format('{}-model', $.model_name)",
+                        "InitialInstanceCount.$": "$.initial_instance_count",
+                        "InstanceType.$": "$.inference_instance_type"
+                      }
+                    ]
+                  },
+                  "ResultPath": "$.endpoint_config_result",
+                  "Next": "CreateEndpoint"
+                },
+                "CreateEndpoint": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createEndpoint",
+                  "Parameters": {
+                    "EndpointName.$": "States.Format('{}-endpoint', $.model_name)",
+                    "EndpointConfigName.$": "States.Format('{}-config', $.model_name)"
+                  },
+                  "ResultPath": "$.endpoint_result",
+                  "Next": "WaitForEndpoint"
+                },
+                "WaitForEndpoint": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "CheckEndpointStatus"
+                },
+                "CheckEndpointStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::aws-sdk:sagemaker:describeEndpoint",
+                  "Parameters": {
+                    "EndpointName.$": "States.Format('{}-endpoint', $.model_name)"
+                  },
+                  "ResultPath": "$.endpoint_status_result",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["SageMaker.SageMakerException"],
+                      "IntervalSeconds": 10,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "EndpointStatusChoice"
+                },
+                "EndpointStatusChoice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.endpoint_status_result.EndpointStatus",
+                      "StringEquals": "InService",
+                      "Next": "CheckRegisterConnector"
+                    },
+                    {
+                      "Variable": "$.endpoint_status_result.EndpointStatus",
+                      "StringEquals": "Failed",
+                      "Next": "FailEndpointCreation"
+                    }
+                  ],
+                  "Default": "WaitForEndpoint"
+                },
+                "FailEndpointCreation": {
+                  "Type": "Fail",
+                  "Cause": "SageMaker endpoint creation failed",
+                  "Error": "EndpointCreationFailed"
+                },
+                "CheckRegisterConnector": {
+                  "Type": "Choice",
+                  "Comment": "Check if OpenSearch connector registration is requested",
+                  "Choices": [
+                    {
+                      "Variable": "$.register_connector",
+                      "StringEquals": "true",
+                      "Next": "RegisterToOpenSearch"
+                    }
+                  ],
+                  "Default": "SuccessEndpointOnly"
+                },
+                "SuccessEndpointOnly": {
+                  "Type": "Succeed",
+                  "Comment": "Endpoint deployed. Connector registration skipped."
+                },
+                "RegisterToOpenSearch": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${RegisterModelLambdaArn}",
+                    "Payload": {
+                      "opensearch_endpoint.$": "$.opensearch_endpoint",
+                      "sagemaker_endpoint_name.$": "States.Format('{}-endpoint', $.model_name)",
+                      "model_name.$": "$.model_name"
+                    }
+                  },
+                  "ResultSelector": {
+                    "connector_id.$": "$.Payload.connector_id",
+                    "model_group_id.$": "$.Payload.model_group_id",
+                    "model_id.$": "$.Payload.model_id"
+                  },
+                  "ResultPath": "$.registration_result",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "Success"
+                },
+                "Success": {
+                  "Type": "Succeed",
+                  "Comment": "Model deployed and registered successfully"
+                }
+              }
+            }
+          - TEIImage: !FindInMap [RegionMap, !Ref "AWS::Region", TEIImage]
+            SageMakerEndpointRoleArn: !GetAtt SageMakerEndpointRole.Arn
+            RegisterModelLambdaArn: !GetAtt RegisterModelLambda.Arn
+
+  # =============================================================================
+  # Auto-Trigger Workflow
+  # =============================================================================
+  AutoTriggerWorkflow:
+    Type: Custom::TriggerWorkflow
+    DependsOn:
+      - DeployAndRegisterStateMachine
+    Properties:
+      ServiceToken: !GetAtt TriggerLambdaFunction.Arn
+      StateMachineArn: !Ref DeployAndRegisterStateMachine
+      ExecutionInput: !Sub |
+        {
+          "model_name": "${ModelName}",
+          "model_data_url": "${ModelDataUrl}",
+          "opensearch_endpoint": "${OpenSearchEndpoint}",
+          "register_connector": "${RegisterConnector}",
+          "inference_instance_type": "${InferenceInstanceType}",
+          "initial_instance_count": ${InitialInstanceCount}
+        }
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  StateMachineArn:
+    Description: "Step Functions State Machine ARN"
+    Value: !Ref DeployAndRegisterStateMachine
+
+  ExecutionArn:
+    Description: "Step Functions execution ARN (auto-started on deployment)"
+    Value: !GetAtt AutoTriggerWorkflow.ExecutionArn
+
+  EndpointName:
+    Description: "SageMaker endpoint name"
+    Value: !Sub "${ModelName}-endpoint"
+
+  SageMakerEndpointRoleArn:
+    Description: "SageMaker Endpoint Role ARN"
+    Value: !GetAtt SageMakerEndpointRole.Arn
+
+  OpenSearchRemoteInferenceRoleArn:
+    Description: "OpenSearch Remote Inference Role ARN (map to ml_full_access in OpenSearch)"
+    Value: !GetAtt OpenSearchRemoteInferenceRole.Arn
+
+  FineTuningLambdaInvokeOpenSearchRoleArn:
+    Description: "Lambda OpenSearch Role ARN (map to ml_full_access in OpenSearch before deployment)"
+    Value:
+      Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FineTuningLambdaInvokeOpenSearchRoleName}"

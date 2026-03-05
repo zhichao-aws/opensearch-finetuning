@@ -94,7 +94,9 @@ def create_connector(opensearch_endpoint, sagemaker_endpoint_name, model_name, r
                 "headers": {
                     "Content-Type": "application/json"
                 },
-                "request_body": "${parameters.input}",
+                "request_body": '{"inputs": ${parameters.input}}',
+                "pre_process_function": "connector.pre_process.default.embedding",
+                "post_process_function": "connector.post_process.default.embedding"
             }
         ]
     }
