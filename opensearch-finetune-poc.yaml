@@ -922,7 +922,7 @@ Resources:
       FunctionName: !Sub "${ModelName}-RegisterModel"
       Runtime: python3.12
       Handler: index.handler
-      Timeout: 300
+      Timeout: 900
       MemorySize: 512
       Role: !GetAtt FineTuningLambdaInvokeOpenSearchRole.Arn
       Code:
@@ -1415,7 +1415,8 @@ Resources:
                       "Image": "${TEIImage}",
                       "ModelDataUrl.$": "$.training_job_result.ModelArtifacts.S3ModelArtifacts",
                       "Environment": {
-                        "HF_MODEL_ID": "/opt/ml/model"
+                        "HF_MODEL_ID": "/opt/ml/model",
+                        "TRUST_REMOTE_CODE": "true"
                       }
                     },
                     "ExecutionRoleArn": "${SageMakerEndpointRoleArn}"

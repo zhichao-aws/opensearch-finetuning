@@ -224,7 +224,7 @@ def main():
     # Load model
     if accelerator.is_main_process:
         print(f"Loading model: {args.model_name}")
-    model = SentenceTransformer(args.model_name)
+    model = SentenceTransformer(args.model_name, trust_remote_code=True)
     model.max_seq_length = args.max_seq_length
 
     # Setup loss function

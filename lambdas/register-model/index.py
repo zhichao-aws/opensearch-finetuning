@@ -149,7 +149,7 @@ def register_model(opensearch_endpoint, model_name, connector_id, model_group_id
     return model_id
 
 
-def wait_for_task(opensearch_endpoint, task_id, max_attempts=30):
+def wait_for_task(opensearch_endpoint, task_id, max_attempts=60):
     """Wait for an ML task to complete."""
     url = f"{opensearch_endpoint}/_plugins/_ml/tasks/{task_id}"
 
@@ -157,16 +157,16 @@ def wait_for_task(opensearch_endpoint, task_id, max_attempts=30):
         response = make_request('GET', url)
         state = response.get('state')
 
-        print(f"Task {task_id} state: {state}")
+        print(f"Task {task_id} attempt {attempt+1}/{max_attempts}, state: {state}")
 
         if state == 'COMPLETED':
             return response.get('model_id')
         elif state in ['FAILED', 'CANCELLED']:
             raise Exception(f"Task failed with state: {state}, error: {response.get('error')}")
 
-        time.sleep(2)
+        time.sleep(5)
 
-    raise Exception(f"Task {task_id} did not complete within timeout")
+    raise Exception(f"Task {task_id} timed out after {max_attempts} attempts")
 
 
 def deploy_model(opensearch_endpoint, model_id):

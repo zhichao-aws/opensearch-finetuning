@@ -3,3 +3,4 @@ transformers==4.44.2
 datasets==3.5.0
 accelerate==1.6.0
 bm25s
+faiss-cpu
