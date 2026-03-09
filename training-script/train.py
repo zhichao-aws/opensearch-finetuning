@@ -185,12 +185,15 @@ def main():
     # Wait for main process to finish extraction
     accelerator.wait_for_everyone()
 
-    data_files = list(training_dir.glob("*.json")) + list(training_dir.glob("*.jsonl"))
+    # Explicitly load scored_training_data.json (not eval data) for strict train/test split
+    data_path = training_dir / "scored_training_data.json"
+    if not data_path.exists():
+        # Fallback: pick first json/jsonl file (backward compatibility)
+        data_files = list(training_dir.glob("*.json")) + list(training_dir.glob("*.jsonl"))
+        if not data_files:
+            raise ValueError(f"No training data found in {training_dir}")
+        data_path = data_files[0]
 
-    if not data_files:
-        raise ValueError(f"No training data found in {training_dir}")
-
-    data_path = data_files[0]
     if accelerator.is_main_process:
         print(f"Using training data: {data_path}")
 
@@ -281,17 +284,25 @@ def main():
                 print(f"Copied {code_file} to {model_code_dir}")
 
         # Create model tarball for SageMaker (exclude checkpoints and unnecessary files)
-        model_tar_path = os.path.join(args.model_dir, "model.tar.gz")
-        exclude_patterns = {"model.tar.gz", "checkpoint-", "runs", "training_args.bin", "optimizer.pt", "scheduler.pt"}
-        with tarfile.open(model_tar_path, "w:gz") as tar:
-            for item in os.listdir(args.model_dir):
-                if item == "model.tar.gz":
-                    continue
-                if any(item.startswith(p) for p in exclude_patterns):
-                    print(f"Skipping {item} (not needed for inference)")
-                    continue
-                tar.add(os.path.join(args.model_dir, item), arcname=item)
-        print(f"Model tarball created: {model_tar_path}")
+        # NOTE: SageMaker automatically tars SM_MODEL_DIR into model.tar.gz for S3.
+        # We must NOT create our own model.tar.gz inside SM_MODEL_DIR, because
+        # SageMaker would include it in the outer tar, and downstream steps that
+        # receive this artifact would hit a nested-tar extraction error (EOFError).
+        # Instead, we simply delete the files we don't want shipped.
+        for item in os.listdir(args.model_dir):
+            item_path = os.path.join(args.model_dir, item)
+            skip = False
+            for pattern in ["checkpoint-", "runs", "training_args.bin", "optimizer.pt", "scheduler.pt"]:
+                if item.startswith(pattern):
+                    skip = True
+                    break
+            if skip:
+                print(f"Removing {item} (not needed for inference)")
+                if os.path.isdir(item_path):
+                    shutil.rmtree(item_path)
+                else:
+                    os.remove(item_path)
+        print(f"Model directory cleaned: {args.model_dir}")
 
 
 if __name__ == "__main__":
