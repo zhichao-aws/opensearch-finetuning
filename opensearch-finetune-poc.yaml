@@ -42,6 +42,14 @@ Metadata:
           - LearningRate
           - MaxSeqLength
       - Label:
+          default: "Evaluation Configuration"
+        Parameters:
+          - EvaluateModel
+          - EvaluationInstanceType
+          - EvaluationSplitRatio
+          - RelevanceThreshold
+          - EvaluationJudgeModelId
+      - Label:
           default: "Deployment Configuration"
         Parameters:
           - DeployEndpoint
@@ -55,6 +63,7 @@ Metadata:
           - S3ValidatorLambdaZipUrl
           - BedrockOrchestratorLambdaZipUrl
           - RegisterModelLambdaZipUrl
+          - EvaluationCheckerLambdaZipUrl
           - TrainingScriptZipUrl
     ParameterLabels:
       OpenSearchEndpoint:
@@ -99,6 +108,16 @@ Metadata:
         default: "Max Sequence Length"
       DeployEndpoint:
         default: "Deploy SageMaker Endpoint"
+      EvaluateModel:
+        default: "Run Model Evaluation"
+      EvaluationInstanceType:
+        default: "Evaluation Instance Type"
+      EvaluationSplitRatio:
+        default: "Evaluation Split Ratio"
+      RelevanceThreshold:
+        default: "LLM Relevance Threshold"
+      EvaluationJudgeModelId:
+        default: "Evaluation Judge Model ID"
       RegisterConnector:
         default: "Register OpenSearch Connector"
       InferenceInstanceType:
@@ -211,7 +230,7 @@ Parameters:
   ScoringInstanceType:
     Type: String
     Description: "SageMaker instance type for scoring (cross-encoder teacher)"
-    Default: "ml.g5.2xlarge"
+    Default: "ml.p4d.24xlarge"
     AllowedValues:
       - "ml.g5.xlarge"
       - "ml.g5.2xlarge"
@@ -220,7 +239,7 @@ Parameters:
   TrainingInstanceType:
     Type: String
     Description: "SageMaker instance type for training"
-    Default: "ml.g5.2xlarge"
+    Default: "ml.p4d.24xlarge"
     AllowedValues:
       - "ml.g5.xlarge"
       - "ml.g5.2xlarge"
@@ -259,6 +278,37 @@ Parameters:
     AllowedValues: ["true", "false"]
     Default: "true"
 
+  # Evaluation Configuration
+  EvaluateModel:
+    Type: String
+    Description: "Whether to run model evaluation after training"
+    AllowedValues: ["true", "false"]
+    Default: "true"
+
+  EvaluationInstanceType:
+    Type: String
+    Description: "SageMaker instance type for evaluation (needs GPU for encoding)"
+    Default: "ml.p4d.24xlarge"
+    AllowedValues:
+      - "ml.g5.xlarge"
+      - "ml.g5.2xlarge"
+      - "ml.p4d.24xlarge"
+
+  EvaluationSplitRatio:
+    Type: String
+    Description: "Fraction of scored training data to use as evaluation set (0.0-1.0)"
+    Default: "0.2"
+
+  RelevanceThreshold:
+    Type: String
+    Description: "LLM relevance score threshold (0-1) for ground truth. Only pairs scoring above this are considered relevant."
+    Default: "0.8"
+
+  EvaluationJudgeModelId:
+    Type: String
+    Description: "Bedrock model ID for LLM relevance judging during evaluation"
+    Default: "us.anthropic.claude-opus-4-6-v1"
+
   RegisterConnector:
     Type: String
     Description: "Whether to register the SageMaker endpoint as an OpenSearch connector"
@@ -268,7 +318,7 @@ Parameters:
   InferenceInstanceType:
     Type: String
     Description: "SageMaker GPU instance type for inference endpoint (GPU required)"
-    Default: "ml.g5.xlarge"
+    Default: "ml.g5.2xlarge"
     AllowedValues:
       - "ml.g4dn.xlarge"
       - "ml.g4dn.2xlarge"
@@ -302,6 +352,11 @@ Parameters:
     Type: String
     Description: "URL to Register Model Lambda zip (GitHub release)"
     Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/register-model-lambda.zip"
+
+  EvaluationCheckerLambdaZipUrl:
+    Type: String
+    Description: "URL to Evaluation Checker Lambda zip (GitHub release)"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/evaluation-checker-lambda.zip"
 
   TrainingScriptZipUrl:
     Type: String
@@ -549,6 +604,14 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource: "*"
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: "*"
 
   # SageMaker Endpoint Role
   SageMakerEndpointRole:
@@ -647,6 +710,7 @@ Resources:
                   - !GetAtt S3ValidatorLambda.Arn
                   - !GetAtt BedrockOrchestratorLambda.Arn
                   - !GetAtt RegisterModelLambda.Arn
+                  - !GetAtt EvaluationCheckerLambda.Arn
         - PolicyName: SageMakerAccess
           PolicyDocument:
             Version: '2012-10-17'
@@ -850,6 +914,8 @@ Resources:
           s3_key: "lambda-zips/bedrock-orchestrator.zip"
         - url: !Ref RegisterModelLambdaZipUrl
           s3_key: "lambda-zips/register-model.zip"
+        - url: !Ref EvaluationCheckerLambdaZipUrl
+          s3_key: "lambda-zips/evaluation-checker.zip"
         - url: !Ref TrainingScriptZipUrl
           s3_key: "training-scripts/training-script.tar.gz"
 
@@ -933,6 +999,21 @@ Resources:
           DATA_BUCKET: !Ref DataBucket
           OPENSEARCH_REMOTE_INFERENCE_ROLE_ARN: !GetAtt OpenSearchRemoteInferenceRole.Arn
 
+  # Evaluation Checker Lambda
+  EvaluationCheckerLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: DownloadLambdaZips
+    Properties:
+      FunctionName: !Sub "${ModelName}-EvaluationChecker"
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 300
+      MemorySize: 512
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        S3Bucket: !Ref DataBucket
+        S3Key: "lambda-zips/evaluation-checker.zip"
+
   # =============================================================================
   # CloudWatch Log Group for State Machine
   # =============================================================================
@@ -952,6 +1033,7 @@ Resources:
       - S3ValidatorLambda
       - BedrockOrchestratorLambda
       - RegisterModelLambda
+      - EvaluationCheckerLambda
     Properties:
       StateMachineName: !Sub "${ModelName}-FineTuneStateMachine"
       RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
@@ -988,7 +1070,13 @@ Resources:
                     "scoring_instance_type": "${ScoringInstanceType}",
                     "scoring_batch_size": "4",
                     "scoring_max_negatives": "4",
-                    "processing_instance_type": "${ProcessingInstanceType}"
+                    "processing_instance_type": "${ProcessingInstanceType}",
+                    "evaluate_model": "${EvaluateModel}",
+                    "evaluation_instance_type": "${EvaluationInstanceType}",
+                    "eval_split_ratio": "${EvaluationSplitRatio}",
+                    "relevance_threshold": "${RelevanceThreshold}",
+                    "judge_model_id": "${EvaluationJudgeModelId}",
+                    "encode_batch_size": "16"
                   },
                   "ResultPath": "$.defaults",
                   "Next": "MergeConfig"
@@ -1332,7 +1420,8 @@ Resources:
                       "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
                       "batch-size.$": "States.Format('{}', $.config.scoring_batch_size)",
                       "max-length.$": "States.Format('{}', $.config.max_seq_length)",
-                      "max-negatives.$": "States.Format('{}', $.config.scoring_max_negatives)"
+                      "max-negatives.$": "States.Format('{}', $.config.scoring_max_negatives)",
+                      "eval-split-ratio.$": "States.Format('{}', $.config.eval_split_ratio)"
                     },
                     "EnableManagedSpotTraining": false
                   },
@@ -1388,7 +1477,117 @@ Resources:
                     "EnableManagedSpotTraining": false
                   },
                   "ResultPath": "$.training_job_result",
-                  "Next": "CheckDeployEndpoint"
+                  "Next": "CheckEvaluateModel"
+                },
+                "CheckEvaluateModel": {
+                  "Type": "Choice",
+                  "Comment": "Check if model evaluation is requested",
+                  "Choices": [
+                    {
+                      "Variable": "$.config.evaluate_model",
+                      "StringEquals": "true",
+                      "Next": "RunModelEvaluation"
+                    }
+                  ],
+                  "Default": "CheckDeployEndpoint"
+                },
+                "RunModelEvaluation": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                  "Comment": "Evaluate fine-tuned model using LLM-judged relevance ground truth",
+                  "Parameters": {
+                    "TrainingJobName.$": "States.Format('evaluate-{}', $$.Execution.Name)",
+                    "AlgorithmSpecification": {
+                      "TrainingImage": "${TrainingImageGPU}",
+                      "TrainingInputMode": "File"
+                    },
+                    "InputDataConfig": [
+                      {
+                        "ChannelName": "model",
+                        "DataSource": {
+                          "S3DataSource": {
+                            "S3Uri.$": "$.training_job_result.ModelArtifacts.S3ModelArtifacts",
+                            "S3DataType": "S3Prefix"
+                          }
+                        }
+                      },
+                      {
+                        "ChannelName": "scoring",
+                        "DataSource": {
+                          "S3DataSource": {
+                            "S3Uri.$": "$.scoring_job_result.ModelArtifacts.S3ModelArtifacts",
+                            "S3DataType": "S3Prefix"
+                          }
+                        }
+                      }
+                    ],
+                    "OutputDataConfig": {
+                      "S3OutputPath.$": "States.Format('s3://${DataBucket}/{}/evaluation-output/', $.model_name)"
+                    },
+                    "ResourceConfig": {
+                      "InstanceCount": 1,
+                      "InstanceType.$": "$.config.evaluation_instance_type",
+                      "VolumeSizeInGB": 100
+                    },
+                    "StoppingCondition": {
+                      "MaxRuntimeInSeconds": 14400
+                    },
+                    "RoleArn": "${SageMakerTrainingRoleArn}",
+                    "HyperParameters": {
+                      "sagemaker_program": "evaluate.py",
+                      "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
+                      "base-model-name.$": "$.base_model_id",
+                      "relevance-threshold.$": "States.Format('{}', $.config.relevance_threshold)",
+                      "judge-model-id.$": "States.Format('{}', $.config.judge_model_id)",
+                      "bedrock-region": "${AWS::Region}",
+                      "encode-batch-size.$": "States.Format('{}', $.config.encode_batch_size)"
+                    },
+                    "EnableManagedSpotTraining": false
+                  },
+                  "ResultPath": "$.evaluation_job_result",
+                  "Next": "CheckEvaluationResults"
+                },
+                "CheckEvaluationResults": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::lambda:invoke",
+                  "Parameters": {
+                    "FunctionName": "${EvaluationCheckerLambdaArn}",
+                    "Payload": {
+                      "evaluation_output_s3_path.$": "$.evaluation_job_result.ModelArtifacts.S3ModelArtifacts"
+                    }
+                  },
+                  "ResultSelector": {
+                    "quality_gate.$": "$.Payload.quality_gate",
+                    "metrics.$": "$.Payload.metrics",
+                    "failures.$": "$.Payload.failures",
+                    "eval_stats.$": "$.Payload.eval_stats"
+                  },
+                  "ResultPath": "$.evaluation_result",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                      "IntervalSeconds": 2,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "QualityGateChoice"
+                },
+                "QualityGateChoice": {
+                  "Type": "Choice",
+                  "Comment": "Route based on evaluation quality gate result",
+                  "Choices": [
+                    {
+                      "Variable": "$.evaluation_result.quality_gate",
+                      "StringEquals": "PASSED",
+                      "Next": "CheckDeployEndpoint"
+                    }
+                  ],
+                  "Default": "SuccessEvaluationFailed"
+                },
+                "SuccessEvaluationFailed": {
+                  "Type": "Succeed",
+                  "Comment": "Training completed but evaluation quality gate failed. Check evaluation results for details."
                 },
                 "CheckDeployEndpoint": {
                   "Type": "Choice",
@@ -1547,6 +1746,7 @@ Resources:
             S3ValidatorLambdaArn: !GetAtt S3ValidatorLambda.Arn
             BedrockOrchestratorLambdaArn: !GetAtt BedrockOrchestratorLambda.Arn
             RegisterModelLambdaArn: !GetAtt RegisterModelLambda.Arn
+            EvaluationCheckerLambdaArn: !GetAtt EvaluationCheckerLambda.Arn
             TrainingImageGPU: !FindInMap [RegionMap, !Ref "AWS::Region", TrainingImageGPU]
             TEIImage: !FindInMap [RegionMap, !Ref "AWS::Region", TEIImage]
             DataBucket: !Ref DataBucket
@@ -1561,6 +1761,11 @@ Resources:
             ScoringInstanceType: !Ref ScoringInstanceType
             ProcessingInstanceType: !Ref ProcessingInstanceType
             TrainBatchSize: !Ref TrainBatchSize
+            EvaluateModel: !Ref EvaluateModel
+            EvaluationInstanceType: !Ref EvaluationInstanceType
+            EvaluationSplitRatio: !Ref EvaluationSplitRatio
+            RelevanceThreshold: !Ref RelevanceThreshold
+            EvaluationJudgeModelId: !Ref EvaluationJudgeModelId
 
   # =============================================================================
   # Auto-Trigger Workflow (starts Step Functions automatically on deployment)
@@ -1635,7 +1840,12 @@ Resources:
               "max_corpus_documents": ${MaxCorpusDocuments},
               "max_query_documents": ${MaxQueryDocuments},
               "sample_query_uri": "${SampleQueryUri}",
-              "config": {}
+              "config": {
+                "evaluate_model": "${EvaluateModel}",
+                "eval_split_ratio": "${EvaluationSplitRatio}",
+                "relevance_threshold": "${RelevanceThreshold}",
+                "judge_model_id": "${EvaluationJudgeModelId}"
+              }
             }
         - !Sub |
             {
@@ -1651,7 +1861,12 @@ Resources:
               "max_corpus_documents": ${MaxCorpusDocuments},
               "max_query_documents": ${MaxQueryDocuments},
               "sample_query_uri": "${SampleQueryUri}",
-              "config": {}
+              "config": {
+                "evaluate_model": "${EvaluateModel}",
+                "eval_split_ratio": "${EvaluationSplitRatio}",
+                "relevance_threshold": "${RelevanceThreshold}",
+                "judge_model_id": "${EvaluationJudgeModelId}"
+              }
             }
 
 # =============================================================================
@@ -1693,6 +1908,12 @@ Outputs:
     Value: !GetAtt RegisterModelLambda.Arn
     Export:
       Name: !Sub "${AWS::StackName}-RegisterModelLambda"
+
+  EvaluationCheckerLambdaArn:
+    Description: "Evaluation Checker Lambda ARN"
+    Value: !GetAtt EvaluationCheckerLambda.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-EvaluationCheckerLambda"
 
   SageMakerTrainingRoleArn:
     Description: "SageMaker Training Role ARN"
@@ -1796,7 +2017,11 @@ Outputs:
           "teacher_score_scale_factor": "0.025",
           "scoring_instance_type": "${ScoringInstanceType}",
           "scoring_batch_size": "4",
-          "scoring_max_negatives": "4"
+          "scoring_max_negatives": "4",
+          "evaluate_model": "${EvaluateModel}",
+          "eval_split_ratio": "${EvaluationSplitRatio}",
+          "relevance_threshold": "${RelevanceThreshold}",
+          "judge_model_id": "${EvaluationJudgeModelId}"
         }
       }
 

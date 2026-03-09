@@ -39,6 +39,9 @@ gh release upload "$TAG" \
     "$BUILD_DIR/s3-validator-lambda.zip" \
     "$BUILD_DIR/bedrock-orchestrator-lambda.zip" \
     "$BUILD_DIR/register-model-lambda.zip" \
+    "$BUILD_DIR/evaluation-checker-lambda.zip" \
+    "$BUILD_DIR/evaluation-checker-lambda.zip" \
+    "$BUILD_DIR/evaluation-checker-lambda.zip" \
     "$BUILD_DIR/training-script.tar.gz" \
     --repo "$REPO" \
     --clobber

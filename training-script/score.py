@@ -18,6 +18,7 @@ import json
 import os
 import argparse
 import logging
+import random
 import tarfile
 from pathlib import Path
 
@@ -146,6 +147,10 @@ def parse_args():
     parser.add_argument("--max-length", type=int, default=1024, help="Max sequence length")
     parser.add_argument("--max-negatives", type=int, default=4, help="Max negatives per query")
 
+    # Train/eval split
+    parser.add_argument("--eval-split-ratio", type=float, default=0.2,
+                        help="Fraction of data to hold out for evaluation (0 = no split)")
+
     return parser.parse_args()
 
 
@@ -263,15 +268,41 @@ def main():
         logger.info(f"Running in multi-GPU mode with {num_gpus} GPUs")
         results = run_multi_gpu(samples, args, num_gpus)
 
-    # Write output
+    # Write output — split into train/eval sets for strict separation
     output_dir = Path(args.output_data_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    output_path = output_dir / "scored_training_data.json"
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=2)
+    eval_ratio = args.eval_split_ratio
+    if eval_ratio > 0 and len(results) > 1:
+        random.seed(42)
+        indices = list(range(len(results)))
+        random.shuffle(indices)
+        split_idx = int(len(indices) * (1 - eval_ratio))
+        train_indices = indices[:split_idx]
+        eval_indices = indices[split_idx:]
 
-    logger.info(f"Results saved to: {output_path}")
+        train_data = [results[i] for i in train_indices]
+        eval_data = [results[i] for i in eval_indices]
+
+        logger.info(f"Split {len(results)} samples -> {len(train_data)} train, {len(eval_data)} eval")
+    else:
+        train_data = results
+        eval_data = []
+        logger.info(f"No eval split (ratio={eval_ratio}), all {len(results)} samples go to training")
+
+    # Always write training data
+    train_path = output_dir / "scored_training_data.json"
+    with open(train_path, "w", encoding="utf-8") as f:
+        json.dump(train_data, f, ensure_ascii=False, indent=2)
+    logger.info(f"Training data saved to: {train_path} ({len(train_data)} samples)")
+
+    # Write eval data if split was performed
+    if eval_data:
+        eval_path = output_dir / "scored_eval_data.json"
+        with open(eval_path, "w", encoding="utf-8") as f:
+            json.dump(eval_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"Eval data saved to: {eval_path} ({len(eval_data)} samples)")
+
     logger.info(f"Total samples: {len(results)}")
 
 
