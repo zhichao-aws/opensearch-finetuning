@@ -336,32 +336,32 @@ Parameters:
   DataExtractorLambdaZipUrl:
     Type: String
     Description: "URL to Data Extractor Lambda zip (GitHub release)"
-    Default: "https://github.com/zirui-song-18/opensearch-finetuning/releases/download/v1.1.0-eval/data-extractor-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/data-extractor-lambda.zip"
 
   S3ValidatorLambdaZipUrl:
     Type: String
     Description: "URL to S3 Validator Lambda zip (GitHub release)"
-    Default: "https://github.com/zirui-song-18/opensearch-finetuning/releases/download/v1.1.0-eval/s3-validator-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/s3-validator-lambda.zip"
 
   BedrockOrchestratorLambdaZipUrl:
     Type: String
     Description: "URL to Bedrock Orchestrator Lambda zip (GitHub release)"
-    Default: "https://github.com/zirui-song-18/opensearch-finetuning/releases/download/v1.1.0-eval/bedrock-orchestrator-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/bedrock-orchestrator-lambda.zip"
 
   RegisterModelLambdaZipUrl:
     Type: String
     Description: "URL to Register Model Lambda zip (GitHub release)"
-    Default: "https://github.com/zirui-song-18/opensearch-finetuning/releases/download/v1.1.0-eval/register-model-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/register-model-lambda.zip"
 
   EvaluationCheckerLambdaZipUrl:
     Type: String
     Description: "URL to Evaluation Checker Lambda zip (GitHub release)"
-    Default: "https://github.com/zirui-song-18/opensearch-finetuning/releases/download/v1.1.0-eval/evaluation-checker-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/evaluation-checker-lambda.zip"
 
   TrainingScriptZipUrl:
     Type: String
     Description: "URL to training script tar.gz (GitHub release)"
-    Default: "https://github.com/zirui-song-18/opensearch-finetuning/releases/download/v1.1.0-eval/training-script.tar.gz"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/training-script.tar.gz"
 
 Conditions:
   UseOpenSearchInput: !Equals [!Ref InputType, "opensearch"]

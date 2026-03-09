@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="zirui-song-18/opensearch-finetuning"
+REPO="zhichao-aws/opensearch-finetuning"
 TAG="${1:-v1.0.0}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build"
@@ -39,6 +39,8 @@ gh release upload "$TAG" \
     "$BUILD_DIR/s3-validator-lambda.zip" \
     "$BUILD_DIR/bedrock-orchestrator-lambda.zip" \
     "$BUILD_DIR/register-model-lambda.zip" \
+    "$BUILD_DIR/evaluation-checker-lambda.zip" \
+    "$BUILD_DIR/evaluation-checker-lambda.zip" \
     "$BUILD_DIR/evaluation-checker-lambda.zip" \
     "$BUILD_DIR/training-script.tar.gz" \
     --repo "$REPO" \
