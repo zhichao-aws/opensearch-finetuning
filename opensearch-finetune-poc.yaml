@@ -41,6 +41,8 @@ Metadata:
           - MaxSteps
           - LearningRate
           - MaxSeqLength
+          - EvalSteps
+          - EarlyStoppingPatience
       - Label:
           default: "Deployment Configuration"
         Parameters:
@@ -97,6 +99,10 @@ Metadata:
         default: "Learning Rate"
       MaxSeqLength:
         default: "Max Sequence Length"
+      EvalSteps:
+        default: "Dev Evaluation Frequency (steps)"
+      EarlyStoppingPatience:
+        default: "Early Stopping Patience"
       DeployEndpoint:
         default: "Deploy SageMaker Endpoint"
       RegisterConnector:
@@ -235,10 +241,24 @@ Parameters:
 
   MaxSteps:
     Type: Number
-    Description: "Maximum training steps (-1 for unlimited, uses epochs)"
-    Default: 500
+    Description: "Maximum training steps (-1 for unlimited, trains full epochs with early stopping)"
+    Default: -1
     MinValue: -1
+    MaxValue: 100000
+
+  EvalSteps:
+    Type: Number
+    Description: "Evaluate dev set every N training steps"
+    Default: 100
+    MinValue: 10
     MaxValue: 1000
+
+  EarlyStoppingPatience:
+    Type: Number
+    Description: "Stop training after N evaluations without improvement"
+    Default: 3
+    MinValue: 1
+    MaxValue: 20
 
   LearningRate:
     Type: String
@@ -286,27 +306,27 @@ Parameters:
   DataExtractorLambdaZipUrl:
     Type: String
     Description: "URL to Data Extractor Lambda zip (GitHub release)"
-    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/data-extractor-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.1/data-extractor-lambda.zip"
 
   S3ValidatorLambdaZipUrl:
     Type: String
     Description: "URL to S3 Validator Lambda zip (GitHub release)"
-    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/s3-validator-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.1/s3-validator-lambda.zip"
 
   BedrockOrchestratorLambdaZipUrl:
     Type: String
     Description: "URL to Bedrock Orchestrator Lambda zip (GitHub release)"
-    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/bedrock-orchestrator-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.1/bedrock-orchestrator-lambda.zip"
 
   RegisterModelLambdaZipUrl:
     Type: String
     Description: "URL to Register Model Lambda zip (GitHub release)"
-    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/register-model-lambda.zip"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.1/register-model-lambda.zip"
 
   TrainingScriptZipUrl:
     Type: String
     Description: "URL to training script tar.gz (GitHub release)"
-    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.0/training-script.tar.gz"
+    Default: "https://github.com/zhichao-aws/opensearch-finetuning/releases/download/v1.0.1/training-script.tar.gz"
 
 Conditions:
   UseOpenSearchInput: !Equals [!Ref InputType, "opensearch"]
@@ -425,59 +445,7 @@ Resources:
                 Resource: !GetAtt BedrockBatchRole.Arn
 
   # Lambda Role for OpenSearch Operations (Data Extraction & Model Registration)
-  # IMPORTANT: This role must be mapped to OpenSearch backend roles before deployment
-  FineTuningLambdaInvokeOpenSearchRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Ref FineTuningLambdaInvokeOpenSearchRoleName
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: CloudWatchLogs
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub "arn:${AWS::Partition}:logs:*:*:*"
-        - PolicyName: OpenSearchAccess
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - es:ESHttpGet
-                  - es:ESHttpPost
-                  - es:ESHttpPut
-                  - es:ESHttpDelete
-                Resource: !Sub "arn:${AWS::Partition}:es:${AWS::Region}:${AWS::AccountId}:domain/*"
-        - PolicyName: S3Access
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:ListBucket
-                Resource:
-                  - !GetAtt DataBucket.Arn
-                  - !Sub "${DataBucket.Arn}/*"
-        - PolicyName: PassRoleForOpenSearchRemoteInference
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: iam:PassRole
-                Resource: !GetAtt OpenSearchRemoteInferenceRole.Arn
+  # Created via helper Lambda to avoid failures when the role already exists in another stack
 
   # Bedrock Batch Job Role
   BedrockBatchRole:
@@ -733,6 +701,15 @@ Resources:
                 Resource:
                   - !GetAtt DataBucket.Arn
                   - !Sub "${DataBucket.Arn}/*"
+              - Effect: Allow
+                Action:
+                  - iam:ListRoles
+                  - iam:GetRole
+                  - iam:CreateRole
+                  - iam:GetRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:PassRole
+                Resource: "*"
 
   # Trigger Lambda Role (for auto-starting workflow)
   TriggerLambdaRole:
@@ -854,6 +831,176 @@ Resources:
           s3_key: "training-scripts/training-script.tar.gz"
 
   # =============================================================================
+  # Role Setup Lambda (creates FineTuningLambdaInvokeOpenSearchRole if not exists)
+  # =============================================================================
+  RoleSetupLambdaFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: [HelperLambdaRole, OpenSearchRemoteInferenceRole]
+    Properties:
+      FunctionName: !Sub "${ModelName}-RoleSetupLambda"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 120
+      MemorySize: 256
+      Role: !GetAtt HelperLambdaRole.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import json
+          import time
+
+          def lambda_handler(event, context):
+              print(f"Event: {event}")
+              if event['RequestType'] in ('Delete', 'Update'):
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+
+              try:
+                  props = event['ResourceProperties']
+                  role_name = props['RoleName']
+                  os_invoke_role_arn = props['OpenSearchInvokeModelRoleArn']
+                  bucket_arn = props['DataBucketArn']
+                  iam = boto3.client('iam')
+
+                  if not role_exists(iam, role_name):
+                      create_role(iam, role_name, bucket_arn)
+                      print(f"Created role: {role_name}")
+                  else:
+                      print(f"Role {role_name} already exists, ensuring policies")
+                      ensure_s3_policy(iam, role_name, bucket_arn)
+
+                  ensure_passrole_policy(iam, role_name, os_invoke_role_arn)
+
+                  role_arn = iam.get_role(RoleName=role_name)['Role']['Arn']
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS,
+                      {'RoleArn': role_arn})
+              except Exception as e:
+                  print(f"Error: {e}")
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+          def role_exists(iam, role_name):
+              try:
+                  iam.get_role(RoleName=role_name)
+                  return True
+              except iam.exceptions.NoSuchEntityException:
+                  return False
+
+          def create_role(iam, role_name, bucket_arn):
+              region = boto3.session.Session().region_name
+              partition = 'aws-cn' if region.startswith('cn-') else 'aws-us-gov' if region.startswith('us-gov-') else 'aws'
+              iam.create_role(
+                  RoleName=role_name,
+                  AssumeRolePolicyDocument=json.dumps({
+                      "Version": "2012-10-17",
+                      "Statement": [{
+                          "Effect": "Allow",
+                          "Principal": {"Service": "lambda.amazonaws.com"},
+                          "Action": "sts:AssumeRole"
+                      }]
+                  }),
+                  Description='Role for Lambda to invoke OpenSearch for fine-tuning')
+              time.sleep(5)
+              iam.put_role_policy(
+                  RoleName=role_name,
+                  PolicyName='CloudWatchLogs',
+                  PolicyDocument=json.dumps({
+                      "Version": "2012-10-17",
+                      "Statement": [
+                          {"Effect": "Allow", "Action": [
+                              "logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"
+                          ], "Resource": "*"}
+                      ]
+                  }))
+              iam.put_role_policy(
+                  RoleName=role_name,
+                  PolicyName='OpenSearchAccess',
+                  PolicyDocument=json.dumps({
+                      "Version": "2012-10-17",
+                      "Statement": [
+                          {"Effect": "Allow", "Action": [
+                              "es:ESHttpGet", "es:ESHttpPost", "es:ESHttpPut", "es:ESHttpDelete"
+                          ], "Resource": f"arn:{partition}:es:*:*:*"}
+                      ]
+                  }))
+              iam.put_role_policy(
+                  RoleName=role_name,
+                  PolicyName='S3Access',
+                  PolicyDocument=json.dumps({
+                      "Version": "2012-10-17",
+                      "Statement": [
+                          {"Effect": "Allow", "Action": [
+                              "s3:GetObject", "s3:PutObject", "s3:ListBucket"
+                          ], "Resource": [bucket_arn, f"{bucket_arn}/*"]}
+                      ]
+                  }))
+              time.sleep(5)
+
+          def ensure_s3_policy(iam, role_name, bucket_arn):
+              try:
+                  existing = iam.get_role_policy(RoleName=role_name, PolicyName='S3Access')
+                  policy = existing['PolicyDocument']
+                  for stmt in policy.get('Statement', []):
+                      res = stmt.get('Resource', [])
+                      if bucket_arn in res:
+                          print("S3 policy already includes this bucket")
+                          return
+                  policy['Statement'].append(
+                      {"Effect": "Allow", "Action": [
+                          "s3:GetObject", "s3:PutObject", "s3:ListBucket"
+                      ], "Resource": [bucket_arn, f"{bucket_arn}/*"]})
+                  iam.put_role_policy(RoleName=role_name, PolicyName='S3Access',
+                      PolicyDocument=json.dumps(policy))
+              except iam.exceptions.NoSuchEntityException:
+                  iam.put_role_policy(
+                      RoleName=role_name,
+                      PolicyName='S3Access',
+                      PolicyDocument=json.dumps({
+                          "Version": "2012-10-17",
+                          "Statement": [
+                              {"Effect": "Allow", "Action": [
+                                  "s3:GetObject", "s3:PutObject", "s3:ListBucket"
+                              ], "Resource": [bucket_arn, f"{bucket_arn}/*"]}
+                          ]
+                      }))
+              time.sleep(5)
+
+          def ensure_passrole_policy(iam, role_name, os_invoke_role_arn):
+              policy_name = 'PassRoleForOpenSearchRemoteInference'
+              try:
+                  existing = iam.get_role_policy(RoleName=role_name, PolicyName=policy_name)
+                  policy = existing['PolicyDocument']
+                  for stmt in policy.get('Statement', []):
+                      if stmt.get('Resource') == os_invoke_role_arn:
+                          print("PassRole policy already exists for this role")
+                          return
+                  policy['Statement'].append(
+                      {"Effect": "Allow", "Action": ["iam:PassRole"], "Resource": os_invoke_role_arn})
+                  iam.put_role_policy(RoleName=role_name, PolicyName=policy_name,
+                      PolicyDocument=json.dumps(policy))
+              except iam.exceptions.NoSuchEntityException:
+                  iam.put_role_policy(
+                      RoleName=role_name,
+                      PolicyName=policy_name,
+                      PolicyDocument=json.dumps({
+                          "Version": "2012-10-17",
+                          "Statement": [
+                              {"Effect": "Allow", "Action": ["iam:PassRole"], "Resource": os_invoke_role_arn}
+                          ]
+                      }))
+              time.sleep(5)
+              print(f"PassRole policy updated for {os_invoke_role_arn}")
+
+  SetupLambdaOpenSearchRole:
+    Type: Custom::SetupRole
+    DependsOn: [RoleSetupLambdaFunction, OpenSearchRemoteInferenceRole]
+    Properties:
+      ServiceToken: !GetAtt RoleSetupLambdaFunction.Arn
+      RoleName: !Ref FineTuningLambdaInvokeOpenSearchRoleName
+      OpenSearchInvokeModelRoleArn: !GetAtt OpenSearchRemoteInferenceRole.Arn
+      DataBucketArn: !GetAtt DataBucket.Arn
+
+  # =============================================================================
   # Lambda Functions
   # =============================================================================
 
@@ -861,14 +1008,15 @@ Resources:
   # Uses FineTuningLambdaInvokeOpenSearchRole which must be mapped to OpenSearch backend roles
   DataExtractorLambda:
     Type: AWS::Lambda::Function
-    DependsOn: DownloadLambdaZips
+    DependsOn: [DownloadLambdaZips, SetupLambdaOpenSearchRole]
     Properties:
       FunctionName: !Sub "${ModelName}-DataExtractor"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
       MemorySize: 8192
-      Role: !GetAtt FineTuningLambdaInvokeOpenSearchRole.Arn
+      Role:
+        Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FineTuningLambdaInvokeOpenSearchRoleName}"
       Code:
         S3Bucket: !Ref DataBucket
         S3Key: "lambda-zips/data-extractor.zip"
@@ -917,14 +1065,15 @@ Resources:
   # Uses FineTuningLambdaInvokeOpenSearchRole which must be mapped to OpenSearch backend roles
   RegisterModelLambda:
     Type: AWS::Lambda::Function
-    DependsOn: DownloadLambdaZips
+    DependsOn: [DownloadLambdaZips, SetupLambdaOpenSearchRole]
     Properties:
       FunctionName: !Sub "${ModelName}-RegisterModel"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
       MemorySize: 512
-      Role: !GetAtt FineTuningLambdaInvokeOpenSearchRole.Arn
+      Role:
+        Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FineTuningLambdaInvokeOpenSearchRoleName}"
       Code:
         S3Bucket: !Ref DataBucket
         S3Key: "lambda-zips/register-model.zip"
@@ -988,7 +1137,9 @@ Resources:
                     "scoring_instance_type": "${ScoringInstanceType}",
                     "scoring_batch_size": "4",
                     "scoring_max_negatives": "4",
-                    "processing_instance_type": "${ProcessingInstanceType}"
+                    "processing_instance_type": "${ProcessingInstanceType}",
+                    "eval_steps": "${EvalSteps}",
+                    "early_stopping_patience": "${EarlyStoppingPatience}"
                   },
                   "ResultPath": "$.defaults",
                   "Next": "MergeConfig"
@@ -1284,7 +1435,8 @@ Resources:
                       "output-s3-path.$": "$.bedrock_status_result.output_s3_path",
                       "documents-s3-path.$": "$.documents_s3_path",
                       "num-negatives": "20",
-                      "max-corpus-documents.$": "States.Format('{}', $.max_corpus_documents)"
+                      "max-corpus-documents.$": "States.Format('{}', $.max_corpus_documents)",
+                      "data-bucket": "${DataBucket}"
                     },
                     "EnableManagedSpotTraining": false
                   },
@@ -1292,57 +1444,177 @@ Resources:
                     "training_data_s3_path.$": "$.ModelArtifacts.S3ModelArtifacts"
                   },
                   "ResultPath": "$.process_output_result",
-                  "Next": "StartSageMakerScoring"
+                  "Next": "ParallelScoringAndLabeling"
                 },
-                "StartSageMakerScoring": {
-                  "Type": "Task",
-                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
-                  "Comment": "Generate teacher scores using cross-encoder",
-                  "Parameters": {
-                    "TrainingJobName.$": "States.Format('scoring-{}', $$.Execution.Name)",
-                    "AlgorithmSpecification": {
-                      "TrainingImage": "${TrainingImageGPU}",
-                      "TrainingInputMode": "File"
-                    },
-                    "InputDataConfig": [
-                      {
-                        "ChannelName": "training",
-                        "DataSource": {
-                          "S3DataSource": {
-                            "S3Uri.$": "$.process_output_result.training_data_s3_path",
-                            "S3DataType": "S3Prefix"
-                          }
+                "ParallelScoringAndLabeling": {
+                  "Type": "Parallel",
+                  "Comment": "Run cross-encoder scoring (train) and LLM dev labeling (Bedrock batch) in parallel",
+                  "Branches": [
+                    {
+                      "StartAt": "StartSageMakerScoring",
+                      "States": {
+                        "StartSageMakerScoring": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                          "Comment": "Generate teacher scores using cross-encoder",
+                          "Parameters": {
+                            "TrainingJobName.$": "States.Format('scoring-{}', $$.Execution.Name)",
+                            "AlgorithmSpecification": {
+                              "TrainingImage": "${TrainingImageGPU}",
+                              "TrainingInputMode": "File"
+                            },
+                            "InputDataConfig": [
+                              {
+                                "ChannelName": "training",
+                                "DataSource": {
+                                  "S3DataSource": {
+                                    "S3Uri.$": "$.process_output_result.training_data_s3_path",
+                                    "S3DataType": "S3Prefix"
+                                  }
+                                }
+                              }
+                            ],
+                            "OutputDataConfig": {
+                              "S3OutputPath.$": "States.Format('s3://${DataBucket}/{}/scoring-output/', $.model_name)"
+                            },
+                            "ResourceConfig": {
+                              "InstanceCount": 1,
+                              "InstanceType.$": "$.config.scoring_instance_type",
+                              "VolumeSizeInGB": 100
+                            },
+                            "StoppingCondition": {
+                              "MaxRuntimeInSeconds": 14400
+                            },
+                            "RoleArn": "${SageMakerTrainingRoleArn}",
+                            "HyperParameters": {
+                              "sagemaker_program": "score.py",
+                              "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
+                              "batch-size.$": "States.Format('{}', $.config.scoring_batch_size)",
+                              "max-length.$": "States.Format('{}', $.config.max_seq_length)",
+                              "max-negatives.$": "States.Format('{}', $.config.scoring_max_negatives)"
+                            },
+                            "EnableManagedSpotTraining": false
+                          },
+                          "ResultSelector": {
+                            "scoring_artifacts.$": "$.ModelArtifacts.S3ModelArtifacts"
+                          },
+                          "End": true
                         }
                       }
-                    ],
-                    "OutputDataConfig": {
-                      "S3OutputPath.$": "States.Format('s3://${DataBucket}/{}/scoring-output/', $.model_name)"
                     },
-                    "ResourceConfig": {
-                      "InstanceCount": 1,
-                      "InstanceType.$": "$.config.scoring_instance_type",
-                      "VolumeSizeInGB": 100
-                    },
-                    "StoppingCondition": {
-                      "MaxRuntimeInSeconds": 14400
-                    },
-                    "RoleArn": "${SageMakerTrainingRoleArn}",
-                    "HyperParameters": {
-                      "sagemaker_program": "score.py",
-                      "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
-                      "batch-size.$": "States.Format('{}', $.config.scoring_batch_size)",
-                      "max-length.$": "States.Format('{}', $.config.max_seq_length)",
-                      "max-negatives.$": "States.Format('{}', $.config.scoring_max_negatives)"
-                    },
-                    "EnableManagedSpotTraining": false
-                  },
-                  "ResultPath": "$.scoring_job_result",
+                    {
+                      "StartAt": "CreateDevLabelJob",
+                      "States": {
+                        "CreateDevLabelJob": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::lambda:invoke",
+                          "Parameters": {
+                            "FunctionName": "${BedrockOrchestratorLambdaArn}",
+                            "Payload": {
+                              "operation": "create_dev_label_job",
+                              "dev_bedrock_s3_path": "s3://${DataBucket}/dev-labeling/input/dev_bedrock_input.jsonl"
+                            }
+                          },
+                          "ResultSelector": {
+                            "job_arn.$": "$.Payload.job_arn",
+                            "job_id.$": "$.Payload.job_id"
+                          },
+                          "ResultPath": "$.dev_label_job",
+                          "Retry": [
+                            {
+                              "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                              "IntervalSeconds": 2,
+                              "MaxAttempts": 3,
+                              "BackoffRate": 2
+                            }
+                          ],
+                          "Next": "WaitForDevLabelJob"
+                        },
+                        "WaitForDevLabelJob": {
+                          "Type": "Wait",
+                          "Seconds": 60,
+                          "Next": "CheckDevLabelJobStatus"
+                        },
+                        "CheckDevLabelJobStatus": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::lambda:invoke",
+                          "Parameters": {
+                            "FunctionName": "${BedrockOrchestratorLambdaArn}",
+                            "Payload": {
+                              "operation": "check_status",
+                              "job_arn.$": "$.dev_label_job.job_arn"
+                            }
+                          },
+                          "ResultSelector": {
+                            "status.$": "$.Payload.status",
+                            "output_s3_path.$": "$.Payload.output_s3_path",
+                            "message.$": "$.Payload.message"
+                          },
+                          "ResultPath": "$.dev_label_status",
+                          "Retry": [
+                            {
+                              "ErrorEquals": ["Lambda.ServiceException", "Lambda.TooManyRequestsException"],
+                              "IntervalSeconds": 2,
+                              "MaxAttempts": 3,
+                              "BackoffRate": 2
+                            }
+                          ],
+                          "Next": "DevLabelStatusChoice"
+                        },
+                        "DevLabelStatusChoice": {
+                          "Type": "Choice",
+                          "Choices": [
+                            {
+                              "Variable": "$.dev_label_status.status",
+                              "StringEquals": "Completed",
+                              "Next": "ProcessDevLabels"
+                            },
+                            {
+                              "Variable": "$.dev_label_status.status",
+                              "StringEquals": "Failed",
+                              "Next": "FailDevLabelJob"
+                            },
+                            {
+                              "Variable": "$.dev_label_status.status",
+                              "StringEquals": "Stopped",
+                              "Next": "FailDevLabelJob"
+                            }
+                          ],
+                          "Default": "WaitForDevLabelJob"
+                        },
+                        "FailDevLabelJob": {
+                          "Type": "Fail",
+                          "Cause": "Dev label Bedrock batch job failed or was stopped",
+                          "Error": "DevLabelJobFailed"
+                        },
+                        "ProcessDevLabels": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::lambda:invoke",
+                          "Parameters": {
+                            "FunctionName": "${BedrockOrchestratorLambdaArn}",
+                            "Payload": {
+                              "operation": "process_dev_labels",
+                              "output_s3_path.$": "$.dev_label_status.output_s3_path",
+                              "dev_data_s3_path": "s3://${DataBucket}/dev-labeling/dev_data.jsonl"
+                            }
+                          },
+                          "ResultSelector": {
+                            "dev_labels_s3_path.$": "$.Payload.dev_labels_s3_path",
+                            "num_labels.$": "$.Payload.num_labels"
+                          },
+                          "ResultPath": "$.dev_labels_result",
+                          "End": true
+                        }
+                      }
+                    }
+                  ],
+                  "ResultPath": "$.parallel_results",
                   "Next": "StartSageMakerTraining"
                 },
                 "StartSageMakerTraining": {
                   "Type": "Task",
                   "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
-                  "Comment": "Train with KL divergence distillation using teacher scores",
+                  "Comment": "Train with KL divergence distillation, dev eval every N steps, early stopping",
                   "Parameters": {
                     "TrainingJobName.$": "States.Format('finetune-{}', $$.Execution.Name)",
                     "AlgorithmSpecification": {
@@ -1354,7 +1626,16 @@ Resources:
                         "ChannelName": "training",
                         "DataSource": {
                           "S3DataSource": {
-                            "S3Uri.$": "$.scoring_job_result.ModelArtifacts.S3ModelArtifacts",
+                            "S3Uri.$": "$.parallel_results[0].scoring_artifacts",
+                            "S3DataType": "S3Prefix"
+                          }
+                        }
+                      },
+                      {
+                        "ChannelName": "dev",
+                        "DataSource": {
+                          "S3DataSource": {
+                            "S3Uri": "s3://${DataBucket}/dev-labeling/",
                             "S3DataType": "S3Prefix"
                           }
                         }
@@ -1382,6 +1663,8 @@ Resources:
                       "num-negatives.$": "States.Format('{}', $.config.num_negatives)",
                       "temperature.$": "States.Format('{}', $.config.temperature)",
                       "teacher-score-scale-factor.$": "States.Format('{}', $.config.teacher_score_scale_factor)",
+                      "eval-steps.$": "States.Format('{}', $.config.eval_steps)",
+                      "early-stopping-patience.$": "States.Format('{}', $.config.early_stopping_patience)",
                       "sagemaker_program": "train.py",
                       "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz"
                     },
@@ -1561,6 +1844,8 @@ Resources:
             ScoringInstanceType: !Ref ScoringInstanceType
             ProcessingInstanceType: !Ref ProcessingInstanceType
             TrainBatchSize: !Ref TrainBatchSize
+            EvalSteps: !Ref EvalSteps
+            EarlyStoppingPatience: !Ref EarlyStoppingPatience
 
   # =============================================================================
   # Auto-Trigger Workflow (starts Step Functions automatically on deployment)
@@ -1718,7 +2003,8 @@ Outputs:
       to OpenSearch backend roles: (1) 'ml_full_access' for model registration operations,
       (2) A role with index read access for data extraction. Use OpenSearch Dashboards
       Security -> Roles -> [role] -> Mapped users -> Map backend role.
-    Value: !GetAtt FineTuningLambdaInvokeOpenSearchRole.Arn
+    Value:
+      Fn::Sub: "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${FineTuningLambdaInvokeOpenSearchRoleName}"
     Export:
       Name: !Sub "${AWS::StackName}-FineTuningLambdaInvokeOpenSearchRole"
 

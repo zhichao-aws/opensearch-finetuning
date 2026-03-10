@@ -117,10 +117,12 @@ If using `InputType=s3`, provide a JSONL file where each line has a `text` field
 | **TrainingInstanceType** | `ml.g5.2xlarge` | SageMaker training instance |
 | **ScoringInstanceType** | `ml.g5.2xlarge` | SageMaker scoring instance |
 | **InferenceInstanceType** | `ml.g5.xlarge` | SageMaker inference endpoint instance |
-| **MaxSteps** | `500` | Max training steps |
+| **MaxSteps** | `-1` | Max training steps (-1 for full epoch with early stopping) |
 | **LearningRate** | `5e-6` | Training learning rate |
 | **TrainBatchSize** | `1` | Per-device training batch size |
 | **MaxSeqLength** | `512` | Max sequence length for tokenization |
+| **EvalSteps** | `100` | Evaluate dev set every N training steps |
+| **EarlyStoppingPatience** | `3` | Stop after N evals without NDCG improvement |
 
 ## Development
 
@@ -135,9 +137,10 @@ If using `InputType=s3`, provide a JSONL file where each line has a `text` field
 │   ├── register-model/index.py       # OpenSearch model registration
 │   └── s3-validator/index.py         # S3 corpus validation
 └── training-script/
-    ├── process_output.py             # Bedrock output processing & BM25 mining
+    ├── process_output.py             # Bedrock output processing, BM25 mining & dev split
     ├── score.py                      # Cross-encoder teacher scoring
-    ├── train.py                      # Model fine-tuning
+    ├── train.py                      # Model fine-tuning with dev eval & early stopping
+    ├── evaluate_utils.py             # Dev set NDCG/HQ evaluation utilities
     ├── inference.py                  # SageMaker inference handler
     └── requirements.txt
 ```

@@ -1,8 +1,9 @@
 """
 Bedrock Batch Orchestrator Lambda Function
 
-Handles synthetic query generation using Bedrock Batch Inference.
-Supports multiple operations: prepare_input, create_job, check_status.
+Handles synthetic query generation and dev set LLM labeling using Bedrock Batch Inference.
+Supports multiple operations: prepare_input, create_job, check_status,
+create_dev_label_job, process_dev_labels.
 
 Note: process_output was moved to a SageMaker training job
 (training_algo/process_output.py) to avoid Lambda timeout on large datasets.
@@ -11,6 +12,8 @@ Operations:
 1. prepare_input: Prepare documents for Bedrock batch inference
 2. create_job: Create Bedrock batch inference job
 3. check_status: Check batch job status
+4. create_dev_label_job: Create Bedrock batch job for dev set LLM labeling
+5. process_dev_labels: Process dev label output into dev_labels.jsonl
 
 Input varies by operation - see individual function docs.
 """
@@ -352,6 +355,249 @@ def check_status(event):
     return result
 
 
+def create_dev_label_job(event):
+    """
+    Create Bedrock batch inference job for dev set LLM relevance labeling.
+
+    The dev_bedrock_input.jsonl was already prepared by process_output.py
+    and uploaded to S3.
+
+    Input:
+    {
+        "operation": "create_dev_label_job",
+        "dev_bedrock_s3_path": "s3://bucket/dev-labeling/input/dev_bedrock_input.jsonl"
+    }
+
+    Output:
+    {
+        "job_arn": "arn:aws:bedrock:...",
+        "job_id": "dev-label-..."
+    }
+    """
+    dev_bedrock_s3_path = event.get('dev_bedrock_s3_path')
+    if not dev_bedrock_s3_path:
+        raise ValueError("dev_bedrock_s3_path is required")
+
+    bucket = os.environ.get('DATA_BUCKET')
+    model_id = os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-haiku-4-5-20251001-v1:0')
+    role_arn = os.environ.get('BEDROCK_BATCH_ROLE_ARN')
+
+    if not role_arn:
+        raise ValueError("BEDROCK_BATCH_ROLE_ARN environment variable is required")
+
+    timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
+    output_prefix = f"dev-labeling/output/{timestamp}/"
+
+    bedrock = boto3.client('bedrock')
+
+    job_name = f"dev-label-{timestamp}"
+
+    response = bedrock.create_model_invocation_job(
+        jobName=job_name,
+        modelId=model_id,
+        roleArn=role_arn,
+        inputDataConfig={
+            "s3InputDataConfig": {
+                "s3Uri": dev_bedrock_s3_path
+            }
+        },
+        outputDataConfig={
+            "s3OutputDataConfig": {
+                "s3Uri": f"s3://{bucket}/{output_prefix}"
+            }
+        }
+    )
+
+    job_arn = response['jobArn']
+    print(f"Created dev label batch job: {job_arn}")
+
+    return {
+        "statusCode": 200,
+        "job_arn": job_arn,
+        "job_id": job_name
+    }
+
+
+def process_dev_labels(event):
+    """
+    Process Bedrock batch output for dev set LLM labels.
+
+    Parses the output, extracts relevance scores, and writes dev_labels.jsonl
+    alongside the dev_data.jsonl in S3.
+
+    Input:
+    {
+        "operation": "process_dev_labels",
+        "output_s3_path": "s3://bucket/dev-labeling/output/...",
+        "dev_data_s3_path": "s3://bucket/dev-labeling/dev_data.jsonl"
+    }
+
+    Output:
+    {
+        "dev_labels_s3_path": "s3://bucket/dev-labeling/dev_labels.jsonl",
+        "num_labels": 50000
+    }
+    """
+    output_s3_path = event.get('output_s3_path')
+    dev_data_s3_path = event.get('dev_data_s3_path')
+
+    if not output_s3_path:
+        raise ValueError("output_s3_path is required")
+
+    bucket = os.environ.get('DATA_BUCKET')
+    s3 = boto3.client('s3')
+
+    # Load dev_data to reconstruct (query, candidate_id) mapping from record IDs
+    dev_samples = []
+    if dev_data_s3_path:
+        dev_bucket, dev_key = parse_s3_path(dev_data_s3_path)
+        for record in iter_s3_jsonl(dev_bucket, dev_key):
+            dev_samples.append(record)
+
+    # Build record_id -> (query, candidate_id) mapping
+    record_to_qd = {}
+    record_idx = 0
+    for sample in dev_samples:
+        query = sample["query"]
+        for cand in sample["candidates"]:
+            record_id = f"dev_{record_idx}"
+            record_to_qd[record_id] = (query, cand["id"])
+            record_idx += 1
+
+    print(f"Built mapping for {len(record_to_qd)} records from {len(dev_samples)} dev queries")
+
+    # List output files
+    output_bucket, output_prefix = parse_s3_path(output_s3_path)
+    paginator = s3.get_paginator('list_objects_v2')
+    output_files = []
+    for page in paginator.paginate(Bucket=output_bucket, Prefix=output_prefix):
+        for obj in page.get('Contents', []):
+            if obj['Key'].endswith('.jsonl.out'):
+                output_files.append(obj['Key'])
+
+    print(f"Found {len(output_files)} dev label output files")
+
+    # Parse output and extract scores
+    labels = []
+    errors = 0
+
+    for output_key in output_files:
+        try:
+            response = s3.get_object(Bucket=output_bucket, Key=output_key)
+            content = response['Body'].read().decode('utf-8')
+
+            for line in content.strip().split('\n'):
+                if not line.strip():
+                    continue
+
+                try:
+                    record = json.loads(line)
+                    record_id = record.get('recordId')
+                    model_output = record.get('modelOutput', {})
+
+                    if record_id not in record_to_qd:
+                        continue
+
+                    query, candidate_id = record_to_qd[record_id]
+
+                    # Extract score from model output
+                    score = _extract_score_from_output(model_output, candidate_id)
+
+                    labels.append({
+                        "query": query,
+                        "candidate_id": candidate_id,
+                        "llm_score": score
+                    })
+
+                except Exception as e:
+                    print(f"Error processing dev label record: {e}")
+                    errors += 1
+
+        except Exception as e:
+            print(f"Error processing dev label file {output_key}: {e}")
+
+    print(f"Extracted {len(labels)} labels, {errors} errors")
+
+    # Write dev_labels.jsonl to S3
+    labels_content = '\n'.join(json.dumps(l) for l in labels) + '\n'
+    dev_labels_s3_path = write_s3_file(
+        bucket,
+        "dev-labeling/dev_labels.jsonl",
+        labels_content,
+        'application/jsonl'
+    )
+
+    print(f"Dev labels written to {dev_labels_s3_path}")
+
+    return {
+        "statusCode": 200,
+        "dev_labels_s3_path": dev_labels_s3_path,
+        "num_labels": len(labels)
+    }
+
+
+def _extract_score_from_output(model_output, doc_id):
+    """Extract relevance score from Claude model output for dev labeling."""
+    import re
+
+    output_content = model_output.get('content', [])
+    response_text = ''
+    for block in output_content:
+        if block.get('type') == 'text':
+            response_text = block.get('text', '')
+            break
+
+    if not response_text:
+        return 0.0
+
+    # Clean markdown
+    parsed_text = response_text.strip()
+    if '```json' in parsed_text:
+        parsed_text = parsed_text.split('```json')[1].split('```')[0].strip()
+    elif '```' in parsed_text:
+        parsed_text = parsed_text.split('```')[1].split('```')[0].strip()
+
+    # Try JSON parsing
+    try:
+        result = json.loads(parsed_text)
+        ratings = result.get('ratings', [])
+        if ratings:
+            score = ratings[0].get('rating_score')
+            if score is not None and 0 <= float(score) <= 1:
+                return float(score)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try fixing common JSON issues
+    try:
+        fixed_text = re.sub(r',\s*([}\]])', r'\1', parsed_text)
+        result = json.loads(fixed_text)
+        ratings = result.get('ratings', [])
+        if ratings:
+            score = ratings[0].get('rating_score')
+            if score is not None and 0 <= float(score) <= 1:
+                return float(score)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Regex fallback
+    patterns = [
+        r'"rating_score"\s*:\s*([0-9]*\.?[0-9]+)',
+        r'"score"\s*:\s*([0-9]*\.?[0-9]+)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, response_text)
+        if match:
+            try:
+                score = float(match.group(1))
+                if 0 <= score <= 1:
+                    return score
+            except ValueError:
+                continue
+
+    return 0.0
+
+
 def handler(event, context):
     """Lambda handler - routes to appropriate operation."""
     print(f"Event: {json.dumps(event)}")
@@ -364,5 +610,9 @@ def handler(event, context):
         return create_job(event)
     elif operation == 'check_status':
         return check_status(event)
+    elif operation == 'create_dev_label_job':
+        return create_dev_label_job(event)
+    elif operation == 'process_dev_labels':
+        return process_dev_labels(event)
     else:
-        raise ValueError(f"Unknown operation: {operation}. Valid operations: prepare_input, create_job, check_status")
+        raise ValueError(f"Unknown operation: {operation}. Valid operations: prepare_input, create_job, check_status, create_dev_label_job, process_dev_labels")
