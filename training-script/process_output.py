@@ -207,9 +207,9 @@ def parse_args():
     # Dev set configuration
     parser.add_argument("--dev-split-ratio", type=float, default=0.2,
                         help="Fraction of documents for dev set")
-    parser.add_argument("--max-dev-documents", type=int, default=500,
-                        help="Max dev documents (caps Bedrock batch to 50k records)")
-    parser.add_argument("--dev-bm25-top-k", type=int, default=100,
+    parser.add_argument("--max-dev-documents", type=int, default=1000,
+                        help="Max dev documents (1000 x top-50 = 50k Bedrock batch limit)")
+    parser.add_argument("--dev-bm25-top-k", type=int, default=50,
                         help="Top-K BM25 candidates for dev queries")
     parser.add_argument("--data-bucket", type=str, default="",
                         help="S3 bucket name for uploading dev Bedrock input")
