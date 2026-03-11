@@ -379,7 +379,7 @@ def create_dev_label_job(event):
         raise ValueError("dev_bedrock_s3_path is required")
 
     bucket = os.environ.get('DATA_BUCKET')
-    model_id = os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-haiku-4-5-20251001-v1:0')
+    model_id = os.environ.get('DEV_LABEL_MODEL_ID') or os.environ.get('BEDROCK_MODEL_ID', 'us.anthropic.claude-sonnet-4-6-v1:0')
     role_arn = os.environ.get('BEDROCK_BATCH_ROLE_ARN')
 
     if not role_arn:

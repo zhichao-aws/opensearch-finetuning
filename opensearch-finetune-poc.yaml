@@ -30,6 +30,7 @@ Metadata:
           default: "Bedrock Configuration"
         Parameters:
           - BedrockModelId
+          - DevLabelModelId
           - QueriesPerDocument
       - Label:
           default: "Training Configuration"
@@ -82,7 +83,9 @@ Metadata:
       MaxQueryDocuments:
         default: "Max Query Documents (Bedrock)"
       BedrockModelId:
-        default: "Bedrock Model ID"
+        default: "Bedrock Model ID (Query Generation)"
+      DevLabelModelId:
+        default: "Bedrock Model ID (Dev Set Labeling)"
       QueriesPerDocument:
         default: "Queries Per Document"
       ProcessingInstanceType:
@@ -194,6 +197,11 @@ Parameters:
     Type: String
     Description: "Bedrock model ID for synthetic query generation"
     Default: "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+  DevLabelModelId:
+    Type: String
+    Description: "Bedrock model ID for dev set LLM relevance labeling"
+    Default: "us.anthropic.claude-sonnet-4-6-v1:0"
 
   QueriesPerDocument:
     Type: Number
@@ -1058,6 +1066,7 @@ Resources:
         Variables:
           DATA_BUCKET: !Ref DataBucket
           BEDROCK_MODEL_ID: !Ref BedrockModelId
+          DEV_LABEL_MODEL_ID: !Ref DevLabelModelId
           QUERIES_PER_DOCUMENT: !Ref QueriesPerDocument
           BEDROCK_BATCH_ROLE_ARN: !GetAtt BedrockBatchRole.Arn
 
