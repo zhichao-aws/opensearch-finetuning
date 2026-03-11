@@ -74,42 +74,53 @@ class DevEvalCallback(TrainerCallback):
         return (metrics["ndcg@10"] + metrics["hq@10"] / 10.0) / 2.0
 
     def on_step_end(self, args, state, control, **kwargs):
+        import torch.distributed as dist
+
         if state.global_step % self.eval_steps != 0 or state.global_step == 0:
             return
 
         # All processes must call evaluate_model (distributed all_reduce inside)
         metrics = evaluate_model(self.model, self.dev_samples, self.dev_labels)
 
-        # Only main process does logging, model saving, and early stopping
-        if not state.is_world_process_zero:
-            return
+        # Only main process does logging, model saving, and early stopping logic
+        should_stop = False
+        if state.is_world_process_zero:
+            metrics["step"] = state.global_step
+            combined = self._combined_score(metrics)
+            metrics["combined_score"] = round(combined, 4)
 
-        metrics["step"] = state.global_step
-        combined = self._combined_score(metrics)
-        metrics["combined_score"] = round(combined, 4)
+            self.eval_history.append(metrics)
 
-        self.eval_history.append(metrics)
+            ndcg = metrics["ndcg@10"]
+            hq = metrics["hq@10"]
+            print(f"\n[Dev Eval] Step {state.global_step}: NDCG@10(0.8)={ndcg:.4f}, HQ@10(0.99)={hq:.4f}, combined={combined:.4f}")
 
-        ndcg = metrics["ndcg@10"]
-        hq = metrics["hq@10"]
-        print(f"\n[Dev Eval] Step {state.global_step}: NDCG@10(0.8)={ndcg:.4f}, HQ@10(0.99)={hq:.4f}, combined={combined:.4f}")
+            min_delta = 0.005
+            if combined > self.best_score + min_delta:
+                self.best_score = combined
+                self.best_step = state.global_step
+                self.no_improve_count = 0
+                # Save best model
+                best_dir = os.path.join(self.model_dir, "best_model")
+                os.makedirs(best_dir, exist_ok=True)
+                self.model.save_pretrained(best_dir)
+                print(f"[Dev Eval] New best! Saved to {best_dir}")
+            else:
+                self.no_improve_count += 1
+                print(f"[Dev Eval] No significant improvement ({self.no_improve_count}/{self.early_stopping_patience})")
 
-        min_delta = 0.005
-        if combined > self.best_score + min_delta:
-            self.best_score = combined
-            self.best_step = state.global_step
-            self.no_improve_count = 0
-            # Save best model
-            best_dir = os.path.join(self.model_dir, "best_model")
-            os.makedirs(best_dir, exist_ok=True)
-            self.model.save_pretrained(best_dir)
-            print(f"[Dev Eval] New best! Saved to {best_dir}")
-        else:
-            self.no_improve_count += 1
-            print(f"[Dev Eval] No significant improvement ({self.no_improve_count}/{self.early_stopping_patience})")
+            if self.no_improve_count >= self.early_stopping_patience:
+                print(f"[Dev Eval] Early stopping at step {state.global_step} (best was step {self.best_step})")
+                should_stop = True
 
-        if self.no_improve_count >= self.early_stopping_patience:
-            print(f"[Dev Eval] Early stopping at step {state.global_step} (best was step {self.best_step})")
+        # Broadcast stop decision to all ranks so they exit together
+        if dist.is_initialized():
+            device = torch.device(f"cuda:{dist.get_rank()}" if torch.cuda.is_available() else "cpu")
+            stop_tensor = torch.tensor([1 if should_stop else 0], device=device)
+            dist.broadcast(stop_tensor, src=0)
+            should_stop = stop_tensor.item() == 1
+
+        if should_stop:
             self.should_stop = True
             control.should_training_stop = True
 
