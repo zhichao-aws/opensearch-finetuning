@@ -282,12 +282,15 @@ def main():
     # Wait for main process to finish extraction
     accelerator.wait_for_everyone()
 
-    data_files = list(training_dir.glob("*.json")) + list(training_dir.glob("*.jsonl"))
-
-    if not data_files:
-        raise ValueError(f"No training data found in {training_dir}")
-
-    data_path = data_files[0]
+    # Prefer scored_training_data.json specifically
+    scored_file = training_dir / "scored_training_data.json"
+    if scored_file.exists():
+        data_path = scored_file
+    else:
+        data_files = list(training_dir.glob("*.json")) + list(training_dir.glob("*.jsonl"))
+        if not data_files:
+            raise ValueError(f"No training data found in {training_dir}")
+        data_path = data_files[0]
     if accelerator.is_main_process:
         print(f"Using training data: {data_path}")
 

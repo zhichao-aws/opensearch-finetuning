@@ -371,7 +371,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub "opensearch-finetune-${ModelName}-${AWS::AccountId}"
+      BucketName: !Sub "opensearch-finetune-${AWS::StackName}-${AWS::AccountId}"
       VersioningConfiguration:
         Status: Enabled
       BucketEncryption:
@@ -395,7 +395,7 @@ Resources:
   LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-LambdaExecutionRole"
+      RoleName: !Sub "${AWS::StackName}-LambdaExecutionRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -451,7 +451,7 @@ Resources:
   BedrockBatchRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-BedrockBatchRole"
+      RoleName: !Sub "${AWS::StackName}-BedrockBatchRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -488,7 +488,7 @@ Resources:
   SageMakerTrainingRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-SageMakerTrainingRole"
+      RoleName: !Sub "${AWS::StackName}-SageMakerTrainingRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -522,7 +522,7 @@ Resources:
   SageMakerEndpointRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-SageMakerEndpointRole"
+      RoleName: !Sub "${AWS::StackName}-SageMakerEndpointRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -568,7 +568,7 @@ Resources:
   OpenSearchRemoteInferenceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "OpenSearch-RemoteInference-${ModelName}"
+      RoleName: !Sub "OpenSearch-RemoteInference-${AWS::StackName}"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -595,7 +595,7 @@ Resources:
   StepFunctionsExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-StepFunctionsRole"
+      RoleName: !Sub "${AWS::StackName}-StepFunctionsRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -674,7 +674,7 @@ Resources:
   HelperLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-HelperLambdaRole"
+      RoleName: !Sub "${AWS::StackName}-HelperLambdaRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -715,7 +715,7 @@ Resources:
   TriggerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub "${ModelName}-TriggerLambdaRole"
+      RoleName: !Sub "${AWS::StackName}-TriggerLambdaRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -745,7 +745,7 @@ Resources:
   HelperLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "${ModelName}-HelperLambda"
+      FunctionName: !Sub "${AWS::StackName}-HelperLambda"
       Runtime: python3.12
       Handler: index.lambda_handler
       Timeout: 300
@@ -837,7 +837,7 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: [HelperLambdaRole, OpenSearchRemoteInferenceRole]
     Properties:
-      FunctionName: !Sub "${ModelName}-RoleSetupLambda"
+      FunctionName: !Sub "${AWS::StackName}-RoleSetupLambda"
       Runtime: python3.12
       Handler: index.lambda_handler
       Timeout: 120
@@ -1010,7 +1010,7 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: [DownloadLambdaZips, SetupLambdaOpenSearchRole]
     Properties:
-      FunctionName: !Sub "${ModelName}-DataExtractor"
+      FunctionName: !Sub "${AWS::StackName}-DataExtractor"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -1030,7 +1030,7 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: DownloadLambdaZips
     Properties:
-      FunctionName: !Sub "${ModelName}-S3Validator"
+      FunctionName: !Sub "${AWS::StackName}-S3Validator"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -1045,7 +1045,7 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: DownloadLambdaZips
     Properties:
-      FunctionName: !Sub "${ModelName}-BedrockOrchestrator"
+      FunctionName: !Sub "${AWS::StackName}-BedrockOrchestrator"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -1067,7 +1067,7 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: [DownloadLambdaZips, SetupLambdaOpenSearchRole]
     Properties:
-      FunctionName: !Sub "${ModelName}-RegisterModel"
+      FunctionName: !Sub "${AWS::StackName}-RegisterModel"
       Runtime: python3.12
       Handler: index.handler
       Timeout: 900
@@ -1088,7 +1088,7 @@ Resources:
   StateMachineLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/stepfunctions/${ModelName}-FineTuneStateMachine"
+      LogGroupName: !Sub "/aws/stepfunctions/${AWS::StackName}-FineTuneStateMachine"
       RetentionInDays: 14
 
   # =============================================================================
@@ -1102,7 +1102,7 @@ Resources:
       - BedrockOrchestratorLambda
       - RegisterModelLambda
     Properties:
-      StateMachineName: !Sub "${ModelName}-FineTuneStateMachine"
+      StateMachineName: !Sub "${AWS::StackName}-FineTuneStateMachine"
       RoleArn: !GetAtt StepFunctionsExecutionRole.Arn
       LoggingConfiguration:
         Destinations:
@@ -1123,30 +1123,36 @@ Resources:
                   "Type": "Pass",
                   "Comment": "Set default values for all configurable parameters",
                   "Result": {
-                    "training_instance_type": "${TrainingInstanceType}",
-                    "inference_instance_type": "${InferenceInstanceType}",
-                    "initial_instance_count": ${InitialInstanceCount},
-                    "max_steps": "${MaxSteps}",
-                    "learning_rate": "${LearningRate}",
-                    "max_seq_length": "${MaxSeqLength}",
-                    "train_batch_size": "${TrainBatchSize}",
-                    "total_batch_size": "128",
-                    "num_negatives": "2",
-                    "temperature": "1.0",
-                    "teacher_score_scale_factor": "0.025",
-                    "scoring_instance_type": "${ScoringInstanceType}",
-                    "scoring_batch_size": "4",
-                    "scoring_max_negatives": "4",
-                    "processing_instance_type": "${ProcessingInstanceType}",
-                    "eval_steps": "${EvalSteps}",
-                    "early_stopping_patience": "${EarlyStoppingPatience}"
+                    "scoring_config": {
+                      "scoring_instance_type": "${ScoringInstanceType}",
+                      "scoring_batch_size": "4",
+                      "scoring_max_negatives": "4"
+                    },
+                    "training_config": {
+                      "training_instance_type": "${TrainingInstanceType}",
+                      "processing_instance_type": "${ProcessingInstanceType}",
+                      "max_steps": "${MaxSteps}",
+                      "learning_rate": "${LearningRate}",
+                      "max_seq_length": "${MaxSeqLength}",
+                      "train_batch_size": "${TrainBatchSize}",
+                      "total_batch_size": "128",
+                      "num_negatives": "2",
+                      "temperature": "1.0",
+                      "teacher_score_scale_factor": "0.025",
+                      "eval_steps": "${EvalSteps}",
+                      "early_stopping_patience": "${EarlyStoppingPatience}"
+                    },
+                    "deployment_config": {
+                      "inference_instance_type": "${InferenceInstanceType}",
+                      "initial_instance_count": ${InitialInstanceCount}
+                    }
                   },
                   "ResultPath": "$.defaults",
                   "Next": "MergeConfig"
                 },
                 "MergeConfig": {
                   "Type": "Pass",
-                  "Comment": "Merge user-provided config with defaults (user values override defaults)",
+                  "Comment": "Merge user-provided configs with defaults (user values override defaults)",
                   "Parameters": {
                     "input_type.$": "$.input_type",
                     "model_name.$": "$.model_name",
@@ -1160,7 +1166,9 @@ Resources:
                     "index_name.$": "$.index_name",
                     "text_fields.$": "$.text_fields",
                     "sample_query_uri.$": "$.sample_query_uri",
-                    "config.$": "States.JsonMerge($.defaults, $.config, false)"
+                    "scoring_config.$": "States.JsonMerge($.defaults.scoring_config, $.scoring_config, false)",
+                    "training_config.$": "States.JsonMerge($.defaults.training_config, $.training_config, false)",
+                    "deployment_config.$": "States.JsonMerge($.defaults.deployment_config, $.deployment_config, false)"
                   },
                   "Next": "ValidateDeployRegister"
                 },
@@ -1276,7 +1284,9 @@ Resources:
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
                     "sample_query_uri.$": "$.sample_query_uri",
-                    "config.$": "$.config"
+                    "scoring_config.$": "$.scoring_config",
+                    "training_config.$": "$.training_config",
+                    "deployment_config.$": "$.deployment_config"
                   },
                   "Next": "PrepareBedrockInput"
                 },
@@ -1294,7 +1304,9 @@ Resources:
                     "max_corpus_documents.$": "$.max_corpus_documents",
                     "max_query_documents.$": "$.max_query_documents",
                     "sample_query_uri.$": "$.sample_query_uri",
-                    "config.$": "$.config"
+                    "scoring_config.$": "$.scoring_config",
+                    "training_config.$": "$.training_config",
+                    "deployment_config.$": "$.deployment_config"
                   },
                   "Next": "PrepareBedrockInput"
                 },
@@ -1422,7 +1434,7 @@ Resources:
                     },
                     "ResourceConfig": {
                       "InstanceCount": 1,
-                      "InstanceType.$": "$.config.processing_instance_type",
+                      "InstanceType.$": "$.training_config.processing_instance_type",
                       "VolumeSizeInGB": 100
                     },
                     "StoppingCondition": {
@@ -1479,7 +1491,7 @@ Resources:
                             },
                             "ResourceConfig": {
                               "InstanceCount": 1,
-                              "InstanceType.$": "$.config.scoring_instance_type",
+                              "InstanceType.$": "$.scoring_config.scoring_instance_type",
                               "VolumeSizeInGB": 100
                             },
                             "StoppingCondition": {
@@ -1489,9 +1501,9 @@ Resources:
                             "HyperParameters": {
                               "sagemaker_program": "score.py",
                               "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz",
-                              "batch-size.$": "States.Format('{}', $.config.scoring_batch_size)",
-                              "max-length.$": "States.Format('{}', $.config.max_seq_length)",
-                              "max-negatives.$": "States.Format('{}', $.config.scoring_max_negatives)"
+                              "batch-size.$": "States.Format('{}', $.scoring_config.scoring_batch_size)",
+                              "max-length.$": "States.Format('{}', $.training_config.max_seq_length)",
+                              "max-negatives.$": "States.Format('{}', $.scoring_config.scoring_max_negatives)"
                             },
                             "EnableManagedSpotTraining": false
                           },
@@ -1646,7 +1658,7 @@ Resources:
                     },
                     "ResourceConfig": {
                       "InstanceCount": 1,
-                      "InstanceType.$": "$.config.training_instance_type",
+                      "InstanceType.$": "$.training_config.training_instance_type",
                       "VolumeSizeInGB": 100
                     },
                     "StoppingCondition": {
@@ -1655,16 +1667,16 @@ Resources:
                     "RoleArn": "${SageMakerTrainingRoleArn}",
                     "HyperParameters": {
                       "model-name.$": "$.base_model_id",
-                      "max-steps.$": "States.Format('{}', $.config.max_steps)",
-                      "train-batch-size.$": "States.Format('{}', $.config.train_batch_size)",
-                      "total-batch-size.$": "States.Format('{}', $.config.total_batch_size)",
-                      "learning-rate.$": "States.Format('{}', $.config.learning_rate)",
-                      "max-seq-length.$": "States.Format('{}', $.config.max_seq_length)",
-                      "num-negatives.$": "States.Format('{}', $.config.num_negatives)",
-                      "temperature.$": "States.Format('{}', $.config.temperature)",
-                      "teacher-score-scale-factor.$": "States.Format('{}', $.config.teacher_score_scale_factor)",
-                      "eval-steps.$": "States.Format('{}', $.config.eval_steps)",
-                      "early-stopping-patience.$": "States.Format('{}', $.config.early_stopping_patience)",
+                      "max-steps.$": "States.Format('{}', $.training_config.max_steps)",
+                      "train-batch-size.$": "States.Format('{}', $.training_config.train_batch_size)",
+                      "total-batch-size.$": "States.Format('{}', $.training_config.total_batch_size)",
+                      "learning-rate.$": "States.Format('{}', $.training_config.learning_rate)",
+                      "max-seq-length.$": "States.Format('{}', $.training_config.max_seq_length)",
+                      "num-negatives.$": "States.Format('{}', $.training_config.num_negatives)",
+                      "temperature.$": "States.Format('{}', $.training_config.temperature)",
+                      "teacher-score-scale-factor.$": "States.Format('{}', $.training_config.teacher_score_scale_factor)",
+                      "eval-steps.$": "States.Format('{}', $.training_config.eval_steps)",
+                      "early-stopping-patience.$": "States.Format('{}', $.training_config.early_stopping_patience)",
                       "sagemaker_program": "train.py",
                       "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz"
                     },
@@ -1716,8 +1728,8 @@ Resources:
                       {
                         "VariantName": "AllTraffic",
                         "ModelName.$": "States.Format('{}-model', $.model_name)",
-                        "InitialInstanceCount.$": "$.config.initial_instance_count",
-                        "InstanceType.$": "$.config.inference_instance_type"
+                        "InitialInstanceCount.$": "$.deployment_config.initial_instance_count",
+                        "InstanceType.$": "$.deployment_config.inference_instance_type"
                       }
                     ]
                   },
@@ -1853,7 +1865,7 @@ Resources:
   TriggerLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: !Sub "${ModelName}-TriggerWorkflow"
+      FunctionName: !Sub "${AWS::StackName}-TriggerWorkflow"
       Runtime: python3.12
       Handler: index.lambda_handler
       Timeout: 60
@@ -1920,7 +1932,9 @@ Resources:
               "max_corpus_documents": ${MaxCorpusDocuments},
               "max_query_documents": ${MaxQueryDocuments},
               "sample_query_uri": "${SampleQueryUri}",
-              "config": {}
+              "scoring_config": {},
+              "training_config": {},
+              "deployment_config": {}
             }
         - !Sub |
             {
@@ -1936,7 +1950,9 @@ Resources:
               "max_corpus_documents": ${MaxCorpusDocuments},
               "max_query_documents": ${MaxQueryDocuments},
               "sample_query_uri": "${SampleQueryUri}",
-              "config": {}
+              "scoring_config": {},
+              "training_config": {},
+              "deployment_config": {}
             }
 
 # =============================================================================
@@ -2030,7 +2046,9 @@ Outputs:
         "max_corpus_documents": ${MaxCorpusDocuments},
         "max_query_documents": ${MaxQueryDocuments},
         "sample_query_uri": "",
-        "config": {}
+        "scoring_config": {},
+        "training_config": {},
+        "deployment_config": {}
       }
 
   StateMachineInputExampleOpenSearch:
@@ -2049,7 +2067,9 @@ Outputs:
         "max_corpus_documents": ${MaxCorpusDocuments},
         "max_query_documents": ${MaxQueryDocuments},
         "sample_query_uri": "",
-        "config": {}
+        "scoring_config": {},
+        "training_config": {},
+        "deployment_config": {}
       }
 
   StateMachineInputExampleWithConfig:
@@ -2068,10 +2088,14 @@ Outputs:
         "max_corpus_documents": ${MaxCorpusDocuments},
         "max_query_documents": ${MaxQueryDocuments},
         "sample_query_uri": "",
-        "config": {
+        "scoring_config": {
+          "scoring_instance_type": "${ScoringInstanceType}",
+          "scoring_batch_size": "4",
+          "scoring_max_negatives": "4"
+        },
+        "training_config": {
           "training_instance_type": "${TrainingInstanceType}",
-          "inference_instance_type": "${InferenceInstanceType}",
-          "initial_instance_count": ${InitialInstanceCount},
+          "processing_instance_type": "${ProcessingInstanceType}",
           "max_steps": "${MaxSteps}",
           "learning_rate": "${LearningRate}",
           "max_seq_length": "${MaxSeqLength}",
@@ -2080,9 +2104,12 @@ Outputs:
           "num_negatives": "2",
           "temperature": "1.0",
           "teacher_score_scale_factor": "0.025",
-          "scoring_instance_type": "${ScoringInstanceType}",
-          "scoring_batch_size": "4",
-          "scoring_max_negatives": "4"
+          "eval_steps": "${EvalSteps}",
+          "early_stopping_patience": "${EarlyStoppingPatience}"
+        },
+        "deployment_config": {
+          "inference_instance_type": "${InferenceInstanceType}",
+          "initial_instance_count": ${InitialInstanceCount}
         }
       }
 

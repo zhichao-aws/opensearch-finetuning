@@ -102,7 +102,12 @@ def load_training_data(data_dir: str, max_negatives: int = 20):
     Returns list of (query, docs_list) tuples where docs_list = [positive] + negatives
     """
     data_path = Path(data_dir)
-    jsonl_files = list(data_path.glob("*.jsonl")) + list(data_path.glob("*.json"))
+    # Only load training_data.jsonl (not dev_data.jsonl or dev_bedrock_input.jsonl)
+    training_file = data_path / "training_data.jsonl"
+    if training_file.exists():
+        jsonl_files = [training_file]
+    else:
+        jsonl_files = list(data_path.glob("*.jsonl")) + list(data_path.glob("*.json"))
 
     if not jsonl_files:
         raise ValueError(f"No JSONL files found in {data_dir}")
