@@ -385,8 +385,11 @@ def create_dev_label_job(event):
     if not role_arn:
         raise ValueError("BEDROCK_BATCH_ROLE_ARN environment variable is required")
 
+    model_name = event.get('model_name', '')
+    prefix = f"{model_name}/" if model_name else ""
+
     timestamp = datetime.utcnow().strftime('%Y%m%d-%H%M%S')
-    output_prefix = f"dev-labeling/output/{timestamp}/"
+    output_prefix = f"{prefix}dev-labeling/output/{timestamp}/"
 
     bedrock = boto3.client('bedrock')
 
@@ -518,11 +521,13 @@ def process_dev_labels(event):
 
     print(f"Extracted {len(labels)} labels, {errors} errors")
 
-    # Write dev_labels.jsonl to S3
+    # Write dev_labels.jsonl to S3 (namespaced by model_name)
+    model_name = event.get('model_name', '')
+    prefix = f"{model_name}/" if model_name else ""
     labels_content = '\n'.join(json.dumps(l) for l in labels) + '\n'
     dev_labels_s3_path = write_s3_file(
         bucket,
-        "dev-labeling/dev_labels.jsonl",
+        f"{prefix}dev-labeling/dev_labels.jsonl",
         labels_content,
         'application/jsonl'
     )

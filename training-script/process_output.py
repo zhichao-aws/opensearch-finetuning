@@ -213,6 +213,8 @@ def parse_args():
                         help="Top-K BM25 candidates for dev queries")
     parser.add_argument("--data-bucket", type=str, default="",
                         help="S3 bucket name for uploading dev Bedrock input")
+    parser.add_argument("--model-name-prefix", type=str, default="",
+                        help="Model name prefix for namespacing S3 paths")
 
     return parser.parse_args()
 
@@ -471,13 +473,14 @@ def main():
 
     # 4. Upload dev Bedrock input to S3 for the parallel Bedrock batch job
     if args.data_bucket:
-        dev_bedrock_s3_key = "dev-labeling/input/dev_bedrock_input.jsonl"
+        prefix = f"{args.model_name_prefix}/" if args.model_name_prefix else ""
+        dev_bedrock_s3_key = f"{prefix}dev-labeling/input/dev_bedrock_input.jsonl"
         with open(dev_bedrock_path, 'rb') as f:
             dev_bedrock_s3_path = upload_to_s3(s3, args.data_bucket, dev_bedrock_s3_key, f.read())
         logger.info(f"Dev Bedrock input uploaded to {dev_bedrock_s3_path}")
 
         # Also upload dev_data.jsonl to S3 for use by training job
-        dev_data_s3_key = "dev-labeling/dev_data.jsonl"
+        dev_data_s3_key = f"{prefix}dev-labeling/dev_data.jsonl"
         with open(dev_path, 'rb') as f:
             dev_data_s3_path = upload_to_s3(s3, args.data_bucket, dev_data_s3_key, f.read())
         logger.info(f"Dev data uploaded to {dev_data_s3_path}")

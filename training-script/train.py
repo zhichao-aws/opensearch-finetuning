@@ -56,32 +56,47 @@ class DevEvalCallback(TrainerCallback):
         self.early_stopping_patience = early_stopping_patience
         self.model_dir = model_dir
 
-        self.best_ndcg = -1.0
+        self.best_score = -1.0
         self.best_step = 0
         self.no_improve_count = 0
         self.eval_history = []
         self.baseline_metrics = None
         self.should_stop = False
 
+    @staticmethod
+    def _combined_score(metrics):
+        """Combine NDCG@10 and HQ@10 into a single score for model selection.
+
+        Both are normalized to [0, 1] and averaged:
+        - NDCG@10 is already in [0, 1]
+        - HQ@10 is a count in [0, 10], normalized by dividing by 10
+        """
+        return (metrics["ndcg@10"] + metrics["hq@10"] / 10.0) / 2.0
+
     def on_step_end(self, args, state, control, **kwargs):
         if state.global_step % self.eval_steps != 0 or state.global_step == 0:
             return
 
+        # All processes must call evaluate_model (distributed all_reduce inside)
         metrics = evaluate_model(self.model, self.dev_samples, self.dev_labels)
-        metrics["step"] = state.global_step
 
-        if self.baseline_metrics is None:
-            # First eval is treated as baseline (model has barely trained)
-            pass
+        # Only main process does logging, model saving, and early stopping
+        if not state.is_world_process_zero:
+            return
+
+        metrics["step"] = state.global_step
+        combined = self._combined_score(metrics)
+        metrics["combined_score"] = round(combined, 4)
 
         self.eval_history.append(metrics)
 
         ndcg = metrics["ndcg@10"]
         hq = metrics["hq@10"]
-        print(f"\n[Dev Eval] Step {state.global_step}: NDCG@10(0.8)={ndcg:.4f}, HQ@10(0.99)={hq:.4f}")
+        print(f"\n[Dev Eval] Step {state.global_step}: NDCG@10(0.8)={ndcg:.4f}, HQ@10(0.99)={hq:.4f}, combined={combined:.4f}")
 
-        if ndcg > self.best_ndcg:
-            self.best_ndcg = ndcg
+        min_delta = 0.005
+        if combined > self.best_score + min_delta:
+            self.best_score = combined
             self.best_step = state.global_step
             self.no_improve_count = 0
             # Save best model
@@ -91,7 +106,7 @@ class DevEvalCallback(TrainerCallback):
             print(f"[Dev Eval] New best! Saved to {best_dir}")
         else:
             self.no_improve_count += 1
-            print(f"[Dev Eval] No improvement ({self.no_improve_count}/{self.early_stopping_patience})")
+            print(f"[Dev Eval] No significant improvement ({self.no_improve_count}/{self.early_stopping_patience})")
 
         if self.no_improve_count >= self.early_stopping_patience:
             print(f"[Dev Eval] Early stopping at step {state.global_step} (best was step {self.best_step})")
@@ -100,28 +115,35 @@ class DevEvalCallback(TrainerCallback):
 
     def on_train_begin(self, args, state, control, **kwargs):
         """Evaluate baseline (step 0) before any training."""
-        print("\n[Dev Eval] Evaluating baseline model (step 0)...")
+        # All processes must call evaluate_model (distributed all_reduce inside)
         metrics = evaluate_model(self.model, self.dev_samples, self.dev_labels)
+
+        if not state.is_world_process_zero:
+            return
+
+        print("\n[Dev Eval] Evaluating baseline model (step 0)...")
         metrics["step"] = 0
+        combined = self._combined_score(metrics)
+        metrics["combined_score"] = round(combined, 4)
         self.baseline_metrics = metrics
         self.eval_history.append(metrics)
-        print(f"[Dev Eval] Baseline: NDCG@10(0.8)={metrics['ndcg@10']:.4f}, HQ@10(0.99)={metrics['hq@10']:.4f}")
+        print(f"[Dev Eval] Baseline: NDCG@10(0.8)={metrics['ndcg@10']:.4f}, HQ@10(0.99)={metrics['hq@10']:.4f}, combined={combined:.4f}")
 
     def get_report(self):
         """Generate evaluation report."""
         report = {
             "baseline": self.baseline_metrics,
             "best_step": self.best_step,
-            "best_ndcg@10": self.best_ndcg,
+            "best_combined_score": self.best_score,
             "early_stopped": self.should_stop,
             "history": self.eval_history,
         }
         if self.baseline_metrics:
-            baseline_ndcg = self.baseline_metrics["ndcg@10"]
-            if baseline_ndcg > 0:
-                report["ndcg_improvement"] = f"{((self.best_ndcg - baseline_ndcg) / baseline_ndcg) * 100:.1f}%"
+            baseline_score = self.baseline_metrics["combined_score"]
+            if baseline_score > 0:
+                report["improvement"] = f"{((self.best_score - baseline_score) / baseline_score) * 100:.1f}%"
             else:
-                report["ndcg_improvement"] = "N/A (baseline=0)"
+                report["improvement"] = "N/A (baseline=0)"
         return report
 
 
@@ -192,6 +214,8 @@ def load_and_convert(data_path: str, num_negatives: int, teacher_score_scale_fac
     ds = Dataset.from_dict(data)
 
     # Convert labels to tensors
+    from datasets import disable_progress_bars
+    disable_progress_bars()
     ds = ds.map(lambda b: {"label": torch.tensor(b["label"], dtype=torch.float32)}, batched=False)
     print(f"Loaded {len(ds)} training examples; skipped {n_skipped}")
     return ds
@@ -232,7 +256,7 @@ def parse_args():
                         help="Scaling factor for teacher scores")
     parser.add_argument("--learning-rate", type=float, default=5e-6,
                         help="Learning rate")
-    parser.add_argument("--num-epochs", type=int, default=1,
+    parser.add_argument("--num-epochs", type=int, default=3,
                         help="Number of training epochs")
     parser.add_argument("--max-steps", type=int, default=-1,
                         help="Max training steps (-1 for unlimited, trains full epochs)")
@@ -385,6 +409,7 @@ def main():
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
+        disable_tqdm=True,
     )
 
     # Train
@@ -395,6 +420,15 @@ def main():
         loss=train_loss,
         callbacks=callbacks,
     )
+
+    if accelerator.is_main_process:
+        import math
+        steps_per_epoch = math.ceil(len(train_dataset) / effective_batch_size)
+        if args.max_steps > 0:
+            total_steps = args.max_steps
+        else:
+            total_steps = steps_per_epoch * args.num_epochs
+        print(f"Total training steps: {total_steps} ({steps_per_epoch} steps/epoch x {args.num_epochs} epochs, max_steps={args.max_steps})")
 
     trainer.train()
 
@@ -428,9 +462,9 @@ def main():
             with open(report_path, 'w') as f:
                 json.dump(report, f, indent=2)
             print(f"Eval report saved to: {report_path}")
-            print(f"Best NDCG@10: {dev_callback.best_ndcg:.4f} at step {dev_callback.best_step}")
+            print(f"Best combined score: {dev_callback.best_score:.4f} at step {dev_callback.best_step}")
             if dev_callback.baseline_metrics:
-                print(f"Baseline NDCG@10: {dev_callback.baseline_metrics['ndcg@10']:.4f}")
+                print(f"Baseline combined score: {dev_callback.baseline_metrics['combined_score']:.4f}")
 
         # Remove checkpoints and training artifacts from model dir
         for item in os.listdir(args.model_dir):

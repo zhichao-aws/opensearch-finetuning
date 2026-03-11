@@ -243,8 +243,10 @@ def handler(event, context):
     if not documents:
         raise ValueError(f"No documents found in index {index_name} with fields {text_fields}")
 
-    # Upload to S3
-    s3_key = "raw-corpus/documents.jsonl"
+    # Upload to S3 (namespaced by model_name to avoid overwrite across runs)
+    model_name = event.get('model_name', '')
+    prefix = f"{model_name}/" if model_name else ""
+    s3_key = f"{prefix}raw-corpus/documents.jsonl"
     s3_path = upload_to_s3(documents, bucket, s3_key)
 
     print(f"Uploaded to {s3_path}")

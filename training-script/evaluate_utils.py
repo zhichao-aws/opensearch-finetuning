@@ -97,6 +97,10 @@ def encode_texts(model, texts, batch_size=64):
 def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
     """Evaluate model on dev set using LLM labels as ground truth.
 
+    In distributed mode, dev samples are sharded across GPUs and metrics
+    are aggregated via all_reduce. All processes must call this function
+    together (collective operation).
+
     For each dev query:
     1. Encode query and all candidates
     2. Rank candidates by cosine similarity
@@ -105,14 +109,25 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
 
     Returns dict with metrics.
     """
+    import torch.distributed as dist
+
     model.eval()
+
+    # Shard dev samples across processes in distributed mode
+    rank = 0
+    world_size = 1
+    if dist.is_initialized():
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+
+    my_samples = dev_samples[rank::world_size]
 
     all_ndcg_scores = []
     all_hq_scores = []
     n_missing_labels = 0
     n_total_pairs = 0
 
-    for sample in dev_samples:
+    for sample in my_samples:
         query = sample["query"]
         candidates = sample["candidates"]
 
@@ -154,11 +169,36 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
         all_ndcg_scores.append(ndcg)
         all_hq_scores.append(hq)
 
-    if not all_ndcg_scores:
-        return {"ndcg@10": 0.0, "hq@10": 0.0, "num_queries": 0}
+    # Aggregate across processes
+    if world_size > 1:
+        device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
+        local_ndcg_sum = torch.tensor(sum(all_ndcg_scores), dtype=torch.float64, device=device)
+        local_hq_sum = torch.tensor(sum(all_hq_scores), dtype=torch.float64, device=device)
+        local_count = torch.tensor(len(all_ndcg_scores), dtype=torch.long, device=device)
+        local_missing = torch.tensor(n_missing_labels, dtype=torch.long, device=device)
+        local_total = torch.tensor(n_total_pairs, dtype=torch.long, device=device)
 
-    avg_ndcg = sum(all_ndcg_scores) / len(all_ndcg_scores)
-    avg_hq = sum(all_hq_scores) / len(all_hq_scores)
+        dist.all_reduce(local_ndcg_sum)
+        dist.all_reduce(local_hq_sum)
+        dist.all_reduce(local_count)
+        dist.all_reduce(local_missing)
+        dist.all_reduce(local_total)
+
+        total_count = local_count.item()
+        if total_count == 0:
+            return {"ndcg@10": 0.0, "hq@10": 0.0, "num_queries": 0}
+
+        avg_ndcg = local_ndcg_sum.item() / total_count
+        avg_hq = local_hq_sum.item() / total_count
+        n_missing_labels = int(local_missing.item())
+        n_total_pairs = int(local_total.item())
+        num_queries = total_count
+    else:
+        if not all_ndcg_scores:
+            return {"ndcg@10": 0.0, "hq@10": 0.0, "num_queries": 0}
+        avg_ndcg = sum(all_ndcg_scores) / len(all_ndcg_scores)
+        avg_hq = sum(all_hq_scores) / len(all_hq_scores)
+        num_queries = len(all_ndcg_scores)
 
     if n_missing_labels > 0:
         logger.warning(f"Missing LLM labels for {n_missing_labels}/{n_total_pairs} pairs")
@@ -166,5 +206,5 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
     return {
         "ndcg@10": round(avg_ndcg, 4),
         "hq@10": round(avg_hq, 4),
-        "num_queries": len(all_ndcg_scores),
+        "num_queries": num_queries,
     }

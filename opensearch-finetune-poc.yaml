@@ -1228,7 +1228,8 @@ Resources:
                       "opensearch_endpoint.$": "$.opensearch_endpoint",
                       "index_name.$": "$.index_name",
                       "text_fields.$": "$.text_fields",
-                      "max_documents.$": "$.max_corpus_documents"
+                      "max_documents.$": "$.max_corpus_documents",
+                      "model_name.$": "$.model_name"
                     }
                   },
                   "ResultSelector": {
@@ -1448,7 +1449,8 @@ Resources:
                       "documents-s3-path.$": "$.documents_s3_path",
                       "num-negatives": "20",
                       "max-corpus-documents.$": "States.Format('{}', $.max_corpus_documents)",
-                      "data-bucket": "${DataBucket}"
+                      "data-bucket": "${DataBucket}",
+                      "model-name-prefix.$": "$.model_name"
                     },
                     "EnableManagedSpotTraining": false
                   },
@@ -1495,7 +1497,7 @@ Resources:
                               "VolumeSizeInGB": 100
                             },
                             "StoppingCondition": {
-                              "MaxRuntimeInSeconds": 14400
+                              "MaxRuntimeInSeconds": 86400
                             },
                             "RoleArn": "${SageMakerTrainingRoleArn}",
                             "HyperParameters": {
@@ -1524,7 +1526,8 @@ Resources:
                             "FunctionName": "${BedrockOrchestratorLambdaArn}",
                             "Payload": {
                               "operation": "create_dev_label_job",
-                              "dev_bedrock_s3_path": "s3://${DataBucket}/dev-labeling/input/dev_bedrock_input.jsonl"
+                              "dev_bedrock_s3_path.$": "States.Format('s3://${DataBucket}/{}/dev-labeling/input/dev_bedrock_input.jsonl', $.model_name)",
+                              "model_name.$": "$.model_name"
                             }
                           },
                           "ResultSelector": {
@@ -1607,7 +1610,8 @@ Resources:
                             "Payload": {
                               "operation": "process_dev_labels",
                               "output_s3_path.$": "$.dev_label_status.output_s3_path",
-                              "dev_data_s3_path": "s3://${DataBucket}/dev-labeling/dev_data.jsonl"
+                              "dev_data_s3_path.$": "States.Format('s3://${DataBucket}/{}/dev-labeling/dev_data.jsonl', $.model_name)",
+                              "model_name.$": "$.model_name"
                             }
                           },
                           "ResultSelector": {
@@ -1647,7 +1651,7 @@ Resources:
                         "ChannelName": "dev",
                         "DataSource": {
                           "S3DataSource": {
-                            "S3Uri": "s3://${DataBucket}/dev-labeling/",
+                            "S3Uri.$": "States.Format('s3://${DataBucket}/{}/dev-labeling/', $.model_name)",
                             "S3DataType": "S3Prefix"
                           }
                         }
@@ -1662,7 +1666,7 @@ Resources:
                       "VolumeSizeInGB": 100
                     },
                     "StoppingCondition": {
-                      "MaxRuntimeInSeconds": 14400
+                      "MaxRuntimeInSeconds": 86400
                     },
                     "RoleArn": "${SageMakerTrainingRoleArn}",
                     "HyperParameters": {
