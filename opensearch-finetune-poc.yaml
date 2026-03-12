@@ -201,7 +201,7 @@ Parameters:
   DevLabelModelId:
     Type: String
     Description: "Bedrock model ID for dev set LLM relevance labeling"
-    Default: "us.anthropic.claude-sonnet-4-6-v1:0"
+    Default: "us.anthropic.claude-sonnet-4-6"
 
   QueriesPerDocument:
     Type: Number
