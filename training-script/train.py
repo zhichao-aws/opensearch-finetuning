@@ -9,7 +9,7 @@ Input:
     - training channel: scored_training_data.json
     - dev channel: dev_data.jsonl + dev_labels.jsonl (LLM relevance scores)
 
-Output: Fine-tuned sentence transformer model (best checkpoint by dev NDCG@10)
+Output: Fine-tuned sentence transformer model (best checkpoint by dev NDCG@10+NDCG@50)
 
 Usage:
     python train.py --training-dir /path/to/input --dev-dir /path/to/dev --model-dir /path/to/output
@@ -63,15 +63,19 @@ class DevEvalCallback(TrainerCallback):
         self.baseline_metrics = None
         self.should_stop = False
 
+    # Early stopping targets
+    NDCG10_TARGET = 0.88
+    NDCG50_TARGET = 0.99
+
     @staticmethod
     def _combined_score(metrics):
-        """Combine NDCG@10 and HQ@10 into a single score for model selection.
+        """Combine NDCG@10 and NDCG@50 into a single score for model selection."""
+        return (metrics["ndcg@10"] + metrics["ndcg@50"]) / 2.0
 
-        Both are normalized to [0, 1] and averaged:
-        - NDCG@10 is already in [0, 1]
-        - HQ@10 is a count in [0, 10], normalized by dividing by 10
-        """
-        return (metrics["ndcg@10"] + metrics["hq@10"] / 10.0) / 2.0
+    @classmethod
+    def _targets_met(cls, metrics):
+        """Check if early stopping targets are met."""
+        return metrics["ndcg@10"] >= cls.NDCG10_TARGET and metrics["ndcg@50"] >= cls.NDCG50_TARGET
 
     def on_step_end(self, args, state, control, **kwargs):
         import torch.distributed as dist
@@ -91,9 +95,10 @@ class DevEvalCallback(TrainerCallback):
 
             self.eval_history.append(metrics)
 
-            ndcg = metrics["ndcg@10"]
+            ndcg10 = metrics["ndcg@10"]
+            ndcg50 = metrics["ndcg@50"]
             hq = metrics["hq@10"]
-            print(f"\n[Dev Eval] Step {state.global_step}: NDCG@10(0.8)={ndcg:.4f}, HQ@10(0.99)={hq:.4f}, combined={combined:.4f}")
+            print(f"\n[Dev Eval] Step {state.global_step}: NDCG@10={ndcg10:.4f} (target {self.NDCG10_TARGET}), NDCG@50={ndcg50:.4f} (target {self.NDCG50_TARGET}), HQ@10={hq:.4f}, combined={combined:.4f}")
 
             min_delta = 0.005
             if combined > self.best_score + min_delta:
@@ -109,7 +114,11 @@ class DevEvalCallback(TrainerCallback):
                 self.no_improve_count += 1
                 print(f"[Dev Eval] No significant improvement ({self.no_improve_count}/{self.early_stopping_patience})")
 
-            if self.no_improve_count >= self.early_stopping_patience:
+            # Early stop if targets are met
+            if self._targets_met(metrics):
+                print(f"[Dev Eval] Targets met at step {state.global_step}: NDCG@10={ndcg10:.4f}>={self.NDCG10_TARGET}, NDCG@50={ndcg50:.4f}>={self.NDCG50_TARGET}")
+                should_stop = True
+            elif self.no_improve_count >= self.early_stopping_patience:
                 print(f"[Dev Eval] Early stopping at step {state.global_step} (best was step {self.best_step})")
                 should_stop = True
 
@@ -138,7 +147,7 @@ class DevEvalCallback(TrainerCallback):
         metrics["combined_score"] = round(combined, 4)
         self.baseline_metrics = metrics
         self.eval_history.append(metrics)
-        print(f"[Dev Eval] Baseline: NDCG@10(0.8)={metrics['ndcg@10']:.4f}, HQ@10(0.99)={metrics['hq@10']:.4f}, combined={combined:.4f}")
+        print(f"[Dev Eval] Baseline: NDCG@10={metrics['ndcg@10']:.4f}, NDCG@50={metrics['ndcg@50']:.4f}, HQ@10={metrics['hq@10']:.4f}, combined={combined:.4f}")
 
     def get_report(self):
         """Generate evaluation report."""

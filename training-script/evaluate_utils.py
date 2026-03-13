@@ -1,7 +1,7 @@
 """
 Evaluation utilities for dev set scoring during training.
 
-Computes NDCG@10 (threshold=0.8) and HQ@10 (threshold=0.99) using
+Computes NDCG@10, NDCG@50 (threshold=0.8) and HQ@10 (threshold=0.99) using
 pre-computed LLM relevance labels as ground truth.
 
 The model encodes dev queries and candidate documents, ranks by cosine
@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 NDCG_THRESHOLD = 0.8
 HQ_THRESHOLD = 0.99
 TOP_K = 10
+TOP_K_50 = 50
 
 
 def calculate_dcg(scores):
@@ -123,6 +124,7 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
     my_samples = dev_samples[rank::world_size]
 
     all_ndcg_scores = []
+    all_ndcg50_scores = []
     all_hq_scores = []
     n_missing_labels = 0
     n_total_pairs = 0
@@ -147,9 +149,9 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
         # Rank by similarity (descending)
         ranked_indices = similarities.argsort(descending=True).cpu().numpy()
 
-        # Get LLM scores in ranked order
+        # Get LLM scores in ranked order (up to TOP_K_50 for ndcg@50)
         ranked_llm_scores = []
-        for idx in ranked_indices[:TOP_K]:
+        for idx in ranked_indices[:TOP_K_50]:
             cand_id = candidates[idx]["id"]
             key = (query, cand_id)
             n_total_pairs += 1
@@ -164,21 +166,25 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
         thresholded_scores = [s if s >= NDCG_THRESHOLD else 0.0 for s in ranked_llm_scores]
 
         ndcg = calculate_ndcg(thresholded_scores, k=TOP_K)
+        ndcg_50 = calculate_ndcg(thresholded_scores, k=TOP_K_50)
         hq = calculate_hq_score(ranked_llm_scores, k=TOP_K, threshold=HQ_THRESHOLD)
 
         all_ndcg_scores.append(ndcg)
+        all_ndcg50_scores.append(ndcg_50)
         all_hq_scores.append(hq)
 
     # Aggregate across processes
     if world_size > 1:
         device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
         local_ndcg_sum = torch.tensor(sum(all_ndcg_scores), dtype=torch.float64, device=device)
+        local_ndcg50_sum = torch.tensor(sum(all_ndcg50_scores), dtype=torch.float64, device=device)
         local_hq_sum = torch.tensor(sum(all_hq_scores), dtype=torch.float64, device=device)
         local_count = torch.tensor(len(all_ndcg_scores), dtype=torch.long, device=device)
         local_missing = torch.tensor(n_missing_labels, dtype=torch.long, device=device)
         local_total = torch.tensor(n_total_pairs, dtype=torch.long, device=device)
 
         dist.all_reduce(local_ndcg_sum)
+        dist.all_reduce(local_ndcg50_sum)
         dist.all_reduce(local_hq_sum)
         dist.all_reduce(local_count)
         dist.all_reduce(local_missing)
@@ -186,17 +192,19 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
 
         total_count = local_count.item()
         if total_count == 0:
-            return {"ndcg@10": 0.0, "hq@10": 0.0, "num_queries": 0}
+            return {"ndcg@10": 0.0, "ndcg@50": 0.0, "hq@10": 0.0, "num_queries": 0}
 
         avg_ndcg = local_ndcg_sum.item() / total_count
+        avg_ndcg50 = local_ndcg50_sum.item() / total_count
         avg_hq = local_hq_sum.item() / total_count
         n_missing_labels = int(local_missing.item())
         n_total_pairs = int(local_total.item())
         num_queries = total_count
     else:
         if not all_ndcg_scores:
-            return {"ndcg@10": 0.0, "hq@10": 0.0, "num_queries": 0}
+            return {"ndcg@10": 0.0, "ndcg@50": 0.0, "hq@10": 0.0, "num_queries": 0}
         avg_ndcg = sum(all_ndcg_scores) / len(all_ndcg_scores)
+        avg_ndcg50 = sum(all_ndcg50_scores) / len(all_ndcg50_scores)
         avg_hq = sum(all_hq_scores) / len(all_hq_scores)
         num_queries = len(all_ndcg_scores)
 
@@ -205,6 +213,7 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
 
     return {
         "ndcg@10": round(avg_ndcg, 4),
+        "ndcg@50": round(avg_ndcg50, 4),
         "hq@10": round(avg_hq, 4),
         "num_queries": num_queries,
     }

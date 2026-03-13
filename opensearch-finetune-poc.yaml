@@ -1431,7 +1431,7 @@ Resources:
                 },
                 "ProcessBedrockOutput": {
                   "Type": "Task",
-                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob",
                   "Comment": "Process Bedrock output and create training data with BM25 hard negatives (runs as SageMaker job to avoid Lambda timeout)",
                   "Parameters": {
                     "TrainingJobName.$": "States.Format('process-{}', $$.Execution.Name)",
@@ -1463,8 +1463,65 @@ Resources:
                     },
                     "EnableManagedSpotTraining": false
                   },
+                  "ResultPath": null,
+                  "Next": "WaitForProcessing"
+                },
+                "WaitForProcessing": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "CheckProcessingStatus"
+                },
+                "CheckProcessingStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::aws-sdk:sagemaker:describeTrainingJob",
+                  "Parameters": {
+                    "TrainingJobName.$": "States.Format('process-{}', $$.Execution.Name)"
+                  },
                   "ResultSelector": {
-                    "training_data_s3_path.$": "$.ModelArtifacts.S3ModelArtifacts"
+                    "TrainingJobStatus.$": "$.TrainingJobStatus",
+                    "S3ModelArtifacts.$": "$.ModelArtifacts.S3ModelArtifacts"
+                  },
+                  "ResultPath": "$.process_status",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["SageMaker.SageMakerException"],
+                      "IntervalSeconds": 10,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "ProcessingStatusChoice"
+                },
+                "ProcessingStatusChoice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.process_status.TrainingJobStatus",
+                      "StringEquals": "Completed",
+                      "Next": "SetProcessOutput"
+                    },
+                    {
+                      "Variable": "$.process_status.TrainingJobStatus",
+                      "StringEquals": "Failed",
+                      "Next": "FailProcessing"
+                    },
+                    {
+                      "Variable": "$.process_status.TrainingJobStatus",
+                      "StringEquals": "Stopped",
+                      "Next": "FailProcessing"
+                    }
+                  ],
+                  "Default": "WaitForProcessing"
+                },
+                "FailProcessing": {
+                  "Type": "Fail",
+                  "Cause": "SageMaker processing job failed or stopped",
+                  "Error": "ProcessingJobFailed"
+                },
+                "SetProcessOutput": {
+                  "Type": "Pass",
+                  "Parameters": {
+                    "training_data_s3_path.$": "$.process_status.S3ModelArtifacts"
                   },
                   "ResultPath": "$.process_output_result",
                   "Next": "ParallelScoringAndLabeling"
@@ -1478,7 +1535,7 @@ Resources:
                       "States": {
                         "StartSageMakerScoring": {
                           "Type": "Task",
-                          "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                          "Resource": "arn:aws:states:::sagemaker:createTrainingJob",
                           "Comment": "Generate teacher scores using cross-encoder",
                           "Parameters": {
                             "TrainingJobName.$": "States.Format('scoring-{}', $$.Execution.Name)",
@@ -1518,8 +1575,65 @@ Resources:
                             },
                             "EnableManagedSpotTraining": false
                           },
+                          "ResultPath": null,
+                          "Next": "WaitForScoring"
+                        },
+                        "WaitForScoring": {
+                          "Type": "Wait",
+                          "Seconds": 60,
+                          "Next": "CheckScoringStatus"
+                        },
+                        "CheckScoringStatus": {
+                          "Type": "Task",
+                          "Resource": "arn:aws:states:::aws-sdk:sagemaker:describeTrainingJob",
+                          "Parameters": {
+                            "TrainingJobName.$": "States.Format('scoring-{}', $$.Execution.Name)"
+                          },
                           "ResultSelector": {
-                            "scoring_artifacts.$": "$.ModelArtifacts.S3ModelArtifacts"
+                            "TrainingJobStatus.$": "$.TrainingJobStatus",
+                            "S3ModelArtifacts.$": "$.ModelArtifacts.S3ModelArtifacts"
+                          },
+                          "ResultPath": "$.scoring_status",
+                          "Retry": [
+                            {
+                              "ErrorEquals": ["SageMaker.SageMakerException"],
+                              "IntervalSeconds": 10,
+                              "MaxAttempts": 3,
+                              "BackoffRate": 2
+                            }
+                          ],
+                          "Next": "ScoringStatusChoice"
+                        },
+                        "ScoringStatusChoice": {
+                          "Type": "Choice",
+                          "Choices": [
+                            {
+                              "Variable": "$.scoring_status.TrainingJobStatus",
+                              "StringEquals": "Completed",
+                              "Next": "SetScoringOutput"
+                            },
+                            {
+                              "Variable": "$.scoring_status.TrainingJobStatus",
+                              "StringEquals": "Failed",
+                              "Next": "FailScoring"
+                            },
+                            {
+                              "Variable": "$.scoring_status.TrainingJobStatus",
+                              "StringEquals": "Stopped",
+                              "Next": "FailScoring"
+                            }
+                          ],
+                          "Default": "WaitForScoring"
+                        },
+                        "FailScoring": {
+                          "Type": "Fail",
+                          "Cause": "SageMaker scoring job failed or stopped",
+                          "Error": "ScoringJobFailed"
+                        },
+                        "SetScoringOutput": {
+                          "Type": "Pass",
+                          "Parameters": {
+                            "scoring_artifacts.$": "$.scoring_status.S3ModelArtifacts"
                           },
                           "End": true
                         }
@@ -1638,7 +1752,7 @@ Resources:
                 },
                 "StartSageMakerTraining": {
                   "Type": "Task",
-                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob.sync",
+                  "Resource": "arn:aws:states:::sagemaker:createTrainingJob",
                   "Comment": "Train with KL divergence distillation, dev eval every N steps, early stopping",
                   "Parameters": {
                     "TrainingJobName.$": "States.Format('finetune-{}', $$.Execution.Name)",
@@ -1694,6 +1808,68 @@ Resources:
                       "sagemaker_submit_directory": "s3://${DataBucket}/training-scripts/training-script.tar.gz"
                     },
                     "EnableManagedSpotTraining": false
+                  },
+                  "ResultPath": null,
+                  "Next": "WaitForTraining"
+                },
+                "WaitForTraining": {
+                  "Type": "Wait",
+                  "Seconds": 60,
+                  "Next": "CheckTrainingStatus"
+                },
+                "CheckTrainingStatus": {
+                  "Type": "Task",
+                  "Resource": "arn:aws:states:::aws-sdk:sagemaker:describeTrainingJob",
+                  "Parameters": {
+                    "TrainingJobName.$": "States.Format('finetune-{}', $$.Execution.Name)"
+                  },
+                  "ResultSelector": {
+                    "TrainingJobStatus.$": "$.TrainingJobStatus",
+                    "S3ModelArtifacts.$": "$.ModelArtifacts.S3ModelArtifacts"
+                  },
+                  "ResultPath": "$.training_status",
+                  "Retry": [
+                    {
+                      "ErrorEquals": ["SageMaker.SageMakerException"],
+                      "IntervalSeconds": 10,
+                      "MaxAttempts": 3,
+                      "BackoffRate": 2
+                    }
+                  ],
+                  "Next": "TrainingStatusChoice"
+                },
+                "TrainingStatusChoice": {
+                  "Type": "Choice",
+                  "Choices": [
+                    {
+                      "Variable": "$.training_status.TrainingJobStatus",
+                      "StringEquals": "Completed",
+                      "Next": "SetTrainingOutput"
+                    },
+                    {
+                      "Variable": "$.training_status.TrainingJobStatus",
+                      "StringEquals": "Failed",
+                      "Next": "FailTraining"
+                    },
+                    {
+                      "Variable": "$.training_status.TrainingJobStatus",
+                      "StringEquals": "Stopped",
+                      "Next": "FailTraining"
+                    }
+                  ],
+                  "Default": "WaitForTraining"
+                },
+                "FailTraining": {
+                  "Type": "Fail",
+                  "Cause": "SageMaker training job failed or stopped",
+                  "Error": "TrainingJobFailed"
+                },
+                "SetTrainingOutput": {
+                  "Type": "Pass",
+                  "Parameters": {
+                    "ModelArtifacts": {
+                      "S3ModelArtifacts.$": "$.training_status.S3ModelArtifacts"
+                    }
                   },
                   "ResultPath": "$.training_job_result",
                   "Next": "CheckDeployEndpoint"
