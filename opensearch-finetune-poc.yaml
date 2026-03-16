@@ -35,6 +35,7 @@ Metadata:
       - Label:
           default: "Training Configuration"
         Parameters:
+          - DoFinetune
           - ProcessingInstanceType
           - ScoringInstanceType
           - TrainingInstanceType
@@ -106,6 +107,8 @@ Metadata:
         default: "Dev Evaluation Frequency (steps)"
       EarlyStoppingPatience:
         default: "Early Stopping Patience"
+      DoFinetune:
+        default: "Run Fine-Tuning"
       DeployEndpoint:
         default: "Deploy SageMaker Endpoint"
       RegisterConnector:
@@ -279,6 +282,13 @@ Parameters:
     Default: 512
     MinValue: 128
     MaxValue: 2048
+
+  # Pipeline Configuration
+  DoFinetune:
+    Type: String
+    Description: "Whether to run fine-tuning after scoring and dev label generation. If false, pipeline stops after data preparation."
+    AllowedValues: ["true", "false"]
+    Default: "true"
 
   # Deployment Configuration
   DeployEndpoint:
@@ -1167,6 +1177,7 @@ Resources:
                     "model_name.$": "$.model_name",
                     "base_model_id.$": "$.base_model_id",
                     "opensearch_endpoint.$": "$.opensearch_endpoint",
+                    "do_finetune.$": "$.do_finetune",
                     "deploy_endpoint.$": "$.deploy_endpoint",
                     "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
@@ -1289,6 +1300,7 @@ Resources:
                     "model_name.$": "$.model_name",
                     "base_model_id.$": "$.base_model_id",
                     "opensearch_endpoint.$": "$.opensearch_endpoint",
+                    "do_finetune.$": "$.do_finetune",
                     "deploy_endpoint.$": "$.deploy_endpoint",
                     "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
@@ -1309,6 +1321,7 @@ Resources:
                     "model_name.$": "$.model_name",
                     "base_model_id.$": "$.base_model_id",
                     "opensearch_endpoint.$": "$.opensearch_endpoint",
+                    "do_finetune.$": "$.do_finetune",
                     "deploy_endpoint.$": "$.deploy_endpoint",
                     "register_connector.$": "$.register_connector",
                     "max_corpus_documents.$": "$.max_corpus_documents",
@@ -1748,7 +1761,23 @@ Resources:
                     }
                   ],
                   "ResultPath": "$.parallel_results",
-                  "Next": "StartSageMakerTraining"
+                  "Next": "CheckDoFinetune"
+                },
+                "CheckDoFinetune": {
+                  "Type": "Choice",
+                  "Comment": "Check if fine-tuning should proceed or stop after data preparation",
+                  "Choices": [
+                    {
+                      "Variable": "$.do_finetune",
+                      "StringEquals": "false",
+                      "Next": "SuccessDataPrepOnly"
+                    }
+                  ],
+                  "Default": "StartSageMakerTraining"
+                },
+                "SuccessDataPrepOnly": {
+                  "Type": "Succeed",
+                  "Comment": "Data preparation completed (scoring and dev labeling). Fine-tuning skipped."
                 },
                 "StartSageMakerTraining": {
                   "Type": "Task",
@@ -2112,6 +2141,7 @@ Resources:
               "input_type": "s3",
               "s3_corpus_path": "${S3CorpusPath}",
               "opensearch_endpoint": "${OpenSearchEndpoint}",
+              "do_finetune": "${DoFinetune}",
               "deploy_endpoint": "${DeployEndpoint}",
               "register_connector": "${RegisterConnector}",
               "index_name": "",
@@ -2130,6 +2160,7 @@ Resources:
               "input_type": "opensearch",
               "s3_corpus_path": "",
               "opensearch_endpoint": "${OpenSearchEndpoint}",
+              "do_finetune": "${DoFinetune}",
               "deploy_endpoint": "${DeployEndpoint}",
               "register_connector": "${RegisterConnector}",
               "index_name": "${OpenSearchIndexName}",
@@ -2226,6 +2257,7 @@ Outputs:
         "input_type": "s3",
         "s3_corpus_path": "s3://your-bucket/corpus.jsonl",
         "opensearch_endpoint": "https://your-domain.${AWS::Region}.es.amazonaws.com",
+        "do_finetune": "${DoFinetune}",
         "deploy_endpoint": "${DeployEndpoint}",
         "register_connector": "${RegisterConnector}",
         "index_name": "",
@@ -2247,6 +2279,7 @@ Outputs:
         "input_type": "opensearch",
         "s3_corpus_path": "",
         "opensearch_endpoint": "https://your-domain.${AWS::Region}.es.amazonaws.com",
+        "do_finetune": "${DoFinetune}",
         "deploy_endpoint": "${DeployEndpoint}",
         "register_connector": "${RegisterConnector}",
         "index_name": "your-index",
@@ -2268,6 +2301,7 @@ Outputs:
         "input_type": "s3",
         "s3_corpus_path": "s3://your-bucket/corpus.jsonl",
         "opensearch_endpoint": "https://your-domain.${AWS::Region}.es.amazonaws.com",
+        "do_finetune": "${DoFinetune}",
         "deploy_endpoint": "${DeployEndpoint}",
         "register_connector": "${RegisterConnector}",
         "index_name": "",

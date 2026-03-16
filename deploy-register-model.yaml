@@ -248,7 +248,10 @@ Resources:
           def lambda_handler(event, context):
               print(f"Event: {event}")
               if event['RequestType'] in ('Delete', 'Update'):
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  try:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  except Exception as e:
+                      print(f"Error sending Delete/Update response: {e}")
                   return
 
               try:
@@ -423,7 +426,10 @@ Resources:
           def handler(event, context):
               print(f"Event: {json.dumps(event)}")
               if event['RequestType'] in ('Delete', 'Update'):
-                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  try:
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  except Exception as e:
+                      print(f"Error sending Delete/Update response: {e}")
                   return
               try:
                   props = event['ResourceProperties']

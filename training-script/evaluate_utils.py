@@ -19,7 +19,6 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Metric thresholds
-NDCG_THRESHOLD = 0.8
 HQ_THRESHOLD = 0.99
 TOP_K = 10
 TOP_K_50 = 50
@@ -162,11 +161,8 @@ def evaluate_model(model, dev_samples, dev_labels, device='cuda'):
                 n_missing_labels += 1
             ranked_llm_scores.append(llm_score)
 
-        # Apply threshold for NDCG: scores below threshold become 0
-        thresholded_scores = [s if s >= NDCG_THRESHOLD else 0.0 for s in ranked_llm_scores]
-
-        ndcg = calculate_ndcg(thresholded_scores, k=TOP_K)
-        ndcg_50 = calculate_ndcg(thresholded_scores, k=TOP_K_50)
+        ndcg = calculate_ndcg(ranked_llm_scores, k=TOP_K)
+        ndcg_50 = calculate_ndcg(ranked_llm_scores, k=TOP_K_50)
         hq = calculate_hq_score(ranked_llm_scores, k=TOP_K, threshold=HQ_THRESHOLD)
 
         all_ndcg_scores.append(ndcg)
