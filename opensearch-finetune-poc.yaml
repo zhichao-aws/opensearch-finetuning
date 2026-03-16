@@ -1190,32 +1190,7 @@ Resources:
                     "training_config.$": "States.JsonMerge($.defaults.training_config, $.training_config, false)",
                     "deployment_config.$": "States.JsonMerge($.defaults.deployment_config, $.deployment_config, false)"
                   },
-                  "Next": "ValidateDeployRegister"
-                },
-                "ValidateDeployRegister": {
-                  "Type": "Choice",
-                  "Comment": "Fail if register_connector=true but deploy_endpoint=false (endpoint required for registration)",
-                  "Choices": [
-                    {
-                      "And": [
-                        {
-                          "Variable": "$.deploy_endpoint",
-                          "StringEquals": "false"
-                        },
-                        {
-                          "Variable": "$.register_connector",
-                          "StringEquals": "true"
-                        }
-                      ],
-                      "Next": "FailInvalidDeployRegister"
-                    }
-                  ],
-                  "Default": "DataSourceChoice"
-                },
-                "FailInvalidDeployRegister": {
-                  "Type": "Fail",
-                  "Cause": "Cannot register connector without deploying endpoint. Set deploy_endpoint=true or register_connector=false.",
-                  "Error": "InvalidDeployRegisterCombination"
+                  "Next": "DataSourceChoice"
                 },
                 "DataSourceChoice": {
                   "Type": "Choice",
